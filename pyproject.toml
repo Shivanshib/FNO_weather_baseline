@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weather-fno"
+version = "0.1.0"
+description = "Baseline FNO for coarse-resolution weather forecasting"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]

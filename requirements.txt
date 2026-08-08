@@ -1,0 +1,9 @@
+torch>=2.2
+neuraloperator>=1.0
+xarray
+zarr
+gcsfs
+numpy
+matplotlib
+pyyaml
+tqdm

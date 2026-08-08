@@ -1,0 +1,111 @@
+# Baseline FNO configuration
+#
+# All paths, hyperparameters and machine-specific settings live here so that
+# moving between machines (cream / vanilla / external compute) never requires
+# touching the code — only this file (or environment variable overrides).
+
+run_name: "fno_baseline_64x32"
+
+data:
+  
+  # PATHS = {
+    #"0.25deg": "gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721.zarr",
+    #"1.5deg":  "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr",
+    #"5.625deg":"gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr",
+#}
+  gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
+
+  # The 20 prognostic variables used in FourCastNet (Pathak et al. 2022,
+  # Table 1), in the model's standard channel order. Each entry gives the
+  # ERA5/CDS variable name and pressure level (level: null = single-level
+  # surface field, so no .sel(level=...) is applied).
+  channels:
+    - {short_name: u10,   name: 10m_u_component_of_wind,   level: null}  # surface
+    - {short_name: v10,   name: 10m_v_component_of_wind,   level: null}  # surface
+    - {short_name: t2m,   name: 2m_temperature,            level: null}  # surface
+    - {short_name: sp,    name: surface_pressure,          level: null}  # surface
+    - {short_name: mslp,  name: mean_sea_level_pressure,   level: null}  # surface
+    - {short_name: t850,  name: temperature,               level: 850}
+    - {short_name: u1000, name: u_component_of_wind,       level: 1000}
+    - {short_name: v1000, name: v_component_of_wind,       level: 1000}
+    - {short_name: z1000, name: geopotential,              level: 1000}
+    - {short_name: u850,  name: u_component_of_wind,       level: 850}
+    - {short_name: v850,  name: v_component_of_wind,       level: 850}
+    - {short_name: z850,  name: geopotential,              level: 850}
+    - {short_name: u500,  name: u_component_of_wind,       level: 500}
+    - {short_name: v500,  name: v_component_of_wind,       level: 500}
+    - {short_name: z500,  name: geopotential,              level: 500}
+    - {short_name: t500,  name: temperature,               level: 500}
+    - {short_name: z50,   name: geopotential,              level: 50}
+    - {short_name: r500,  name: relative_humidity,         level: 500}
+    - {short_name: r850,  name: relative_humidity,         level: 850}
+    - {short_name: tcwv,  name: total_column_water_vapour, level: null}  # integrated
+
+  resolution: [64, 32]          # (lon, lat) grid size for training data
+
+  # Axis flips needed because the coarse store's axis order/orientation
+  # differs from what the model expects. TODO: confirm the actual flips
+  # needed once you've inspected the raw data (e.g. latitude may be stored
+  # north-to-south when the model expects south-to-north).
+  flip_lat: true
+  flip_lon: false
+
+  # Time-based split — no random shuffling across time (avoids leakage
+  # between adjacent, highly correlated timesteps).
+  train_start: "2000-01-01"
+  train_end: "2014-12-31"
+  val_start: "2015-01-01"
+  val_end: "2016-12-31"
+
+  # Normalisation stats are computed once from the training split and cached
+  # here so every run (and inference later) uses identical stats.
+  stats_cache_path: "outputs/stats/normalisation_stats.npz"
+
+model:
+  in_channels: 20
+  out_channels: 20
+  n_modes: [16, 32]              # Fourier modes kept per spatial dim (lon, lat)
+  hidden_channels: 64
+  n_layers: 4
+  # TFNO option — leave off (null) for the baseline, see project notes on
+  # when this is worth switching on. Set factorization: "tucker" and a rank
+  # in (0, 1] to compress the spectral weights via low-rank tensor factors.
+  factorization: null
+  rank: null
+
+training:
+  batch_size: 32
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-5
+  epochs: 100
+  num_workers: 4
+  device: "cuda"                 # falls back to cpu automatically if unavailable
+  early_stopping_patience: 15
+
+  output_dir: "outputs"
+  checkpoint_dir: "outputs/checkpoints"
+  plot_dir: "outputs/plots"
+  log_dir: "outputs/logs"
+
+# Metrics to track during training/validation. TODO: fill in the specific
+# variables + pressure levels you want lat-weighted MSE etc. computed over
+# once your channel list is finalised.
+metrics:
+  primary: "lat_weighted_mse"
+  additional: []    # e.g. ["lat_weighted_rmse", "lat_weighted_acc"]
+
+inference:
+  # Higher-resolution data used only at inference time — a different GCS
+  # store from the coarse training data.
+  # TODO: fill in the actual GCS path + target resolution.
+  gcs_bucket_path: "gs://TODO-bucket/TODO-higher-res-path.zarr"
+  resolution: [0, 0]             # TODO: [lon, lat] of the inference grid
+
+  checkpoint_path: "outputs/checkpoints/best.pt"
+  output_dir: "outputs/predictions"
+
+  # Specific humidity must be DERIVED rather than read directly at the
+  # highest inference resolution. TODO: confirm which raw fields are
+  # available (e.g. relative humidity + temperature + pressure) so
+  # compute_specific_humidity() can be filled in.
+  derive_specific_humidity: true

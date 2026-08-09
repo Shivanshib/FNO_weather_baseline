@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -23,29 +22,42 @@ from weather_fno.utils.plotting import plot_history
 
 
 def main():
+    # 1. create argument parser
     parser = argparse.ArgumentParser()
+    
+    # will pass in the .yaml file that we set up when running the code from the terminal
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 
+    # stores all hyper parameters into a python object
     cfg = load_config(args.config)
     device = resolve_device(cfg.training.device)
 
+
+    # 2. Data Pipeline
+    # initialise training and validation datasets
     train_ds, val_ds = build_train_val_datasets(cfg.data)
 
+    # wraps datasets into pytorch dataloaders
     train_loader = DataLoader(train_ds, batch_size=cfg.training.batch_size,
                                shuffle=True, num_workers=cfg.training.num_workers)
     val_loader = DataLoader(val_ds, batch_size=cfg.training.batch_size,
                              shuffle=False, num_workers=cfg.training.num_workers)
 
+    # 3. Model and Optimisation Init
+    # builds fno model
     model = build_model(cfg.model)
+    # builds optimiser
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training.learning_rate,
                                   weight_decay=cfg.training.weight_decay)
 
-    # TODO: fill in the actual latitude values for the training grid, e.g.
-    # read them from the dataset itself rather than hardcoding.
-    lat_degrees = np.linspace(-90, 90, cfg.data.resolution[1])
-    weights = lat_weights(lat_degrees)
+    # 4. Set up physics informed Adjustments
+    # Real latitude values pulled from the store itself (see
+    # GCSWeatherDataset.lat_values) — not a guessed/linspace approximation,
+    # since most equiangular grids don't actually space evenly pole-to-pole.
+    weights = lat_weights(train_ds.lat_values)
 
+    # 5. Set up training loop and visualisation
     trainer = Trainer(model, optimizer, cfg.training, weights, device)
     history = trainer.fit(train_loader, val_loader)
 

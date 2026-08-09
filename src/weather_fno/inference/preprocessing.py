@@ -3,7 +3,10 @@ Preprocessing for higher-resolution inference data.
 
 Separate from `data/preprocessing.py` because the inference-time source is a
 different (higher-resolution) GCS store, may have different raw variables
-available, and needs specific humidity DERIVED rather than read directly.
+available, and needs relative humidity DERIVED rather than read directly
+(the store provides specific humidity as a prognostic variable, not
+relative humidity — unlike the training channels, which use relative
+humidity per FourCastNet's variable set).
 """
 
 from __future__ import annotations
@@ -13,36 +16,45 @@ from typing import Dict
 import numpy as np
 
 
-def compute_specific_humidity(
-    relative_humidity: np.ndarray,
+def compute_relative_humidity(
+    specific_humidity: np.ndarray,
     temperature: np.ndarray,
-    pressure: np.ndarray,
+    pressure_hpa: float,
 ) -> np.ndarray:
     """
-    Derive specific humidity from relative humidity, temperature and
-    pressure at the highest inference resolution.
+    Derive relative humidity (%) from specific humidity and temperature on
+    a pressure-level surface.
 
-    TODO: confirm units coming out of the higher-res store before filling
-    this in — this needs:
-      1. Saturation vapour pressure from temperature (e.g. Tetens' or
-         Clausius-Clapeyron approximation).
-      2. Actual vapour pressure = relative_humidity * saturation_vapour_pressure.
-      3. Specific humidity q = 0.622 * e / (pressure - 0.378 * e)
-         (standard meteorological approximation).
+    pressure_hpa is a constant, not a field — since specific_humidity and
+    temperature are already given ON a pressure-level surface (500 or 850
+    hPa), that level number IS the pressure at every gridpoint, so there's
+    no separate pressure field to load from the store.
+
+    Formula (standard meteorological approximation):
+      1. Saturation vapour pressure from temperature (Tetens' formula).
+      2. Actual vapour pressure from specific humidity:
+         e = q * p / (0.622 + 0.378 * q)
+      3. Relative humidity = 100 * e / e_sat
 
     Args:
-        relative_humidity: fraction in [0, 1] or percent — confirm which.
-        temperature: TODO confirm units (K vs C).
-        pressure: TODO confirm units (Pa vs hPa) and whether this is
-            surface pressure or per-level pressure.
+        specific_humidity: kg/kg. TODO confirm this against the store —
+            some sources give g/kg instead, which would need /1000 first.
+        temperature: Kelvin. TODO confirm — Tetens' formula below converts
+            to Celsius internally assuming Kelvin input.
+        pressure_hpa: the pressure level these fields sit on, e.g. 500 or
+            850 (spec.level from the ChannelSpec calling this).
 
     Returns:
-        Specific humidity array, same shape as inputs.
+        Relative humidity as a percentage (0-100), same shape as inputs.
     """
-    raise NotImplementedError(
-        "Fill in once the higher-resolution store's raw variables, units "
-        "and pressure-level structure are confirmed."
-    )
+    t_celsius = temperature - 273.15
+    e_sat = 6.1078 * np.power(10.0, (7.5 * t_celsius) / (237.3 + t_celsius))
+
+    q = specific_humidity
+    e = q * pressure_hpa / (0.622 + 0.378 * q)
+
+    rh = 100.0 * e / e_sat
+    return np.clip(rh, 0.0, 100.0)
 
 
 def flip_axes_inference(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:

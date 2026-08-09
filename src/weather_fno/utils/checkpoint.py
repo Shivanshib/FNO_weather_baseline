@@ -37,7 +37,14 @@ def load_checkpoint(
     if not os.path.exists(path):
         return None  # nothing to resume from
 
-    ckpt = torch.load(path, map_location=device)
+    # weights_only=False: the checkpoint intentionally carries a full
+    # TrainingConfig object (not just tensors) alongside the state dicts —
+    # safe here since these are checkpoints this same project produced,
+    # never loaded from an untrusted source. PyTorch >=2.6 defaults
+    # torch.load to weights_only=True, which refuses to unpickle that
+    # config object and raises UnpicklingError; without this, resuming
+    # from a checkpoint fails on any environment with a recent PyTorch.
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
     if optimizer is not None and "optimizer_state" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state"])

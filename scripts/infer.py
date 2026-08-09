@@ -16,12 +16,14 @@ from weather_fno.inference.predict import run_inference
 
 
 def main():
+    # set up argpase to accept arguments from the terminal
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
 
+    # load the normalisation statistics
     # Reuse the exact normalisation stats computed on the training split —
     # never re-fit stats on inference data.
     train_cache_path = cfg.data.stats_cache_path.replace("normalisation_stats", "train_cache")

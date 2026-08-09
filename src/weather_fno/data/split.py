@@ -22,6 +22,8 @@ def build_train_val_datasets(data_cfg: DataConfig):
         end=data_cfg.train_end,
         flip_lat=data_cfg.flip_lat,
         flip_lon=data_cfg.flip_lon,
+        lat_dim=data_cfg.lat_dim,
+        lon_dim=data_cfg.lon_dim,
         stats=None,  # computed fresh from the training split
         cache_path=train_cache,
     )
@@ -33,6 +35,8 @@ def build_train_val_datasets(data_cfg: DataConfig):
         end=data_cfg.val_end,
         flip_lat=data_cfg.flip_lat,
         flip_lon=data_cfg.flip_lon,
+        lat_dim=data_cfg.lat_dim,
+        lon_dim=data_cfg.lon_dim,
         stats=train_ds.stats,  # reuse TRAIN stats — never fit stats on val
         cache_path=val_cache,
     )

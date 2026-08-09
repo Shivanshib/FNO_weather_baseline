@@ -9,6 +9,7 @@ rather than re-reading/reprocessing from GCS every epoch.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,16 +19,53 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 from weather_fno.config import ChannelSpec
+from weather_fno.data.io import open_dataset
 from weather_fno.data.preprocessing import flip_axes, normalise
 
 
-def _select_channel(ds: xr.Dataset, spec: ChannelSpec) -> np.ndarray:
-    """Pull a single channel out of the store, selecting a pressure level
-    when the field isn't surface/integrated (level is None)."""
-    da = ds[spec.name]
-    if spec.level is not None:
-        da = da.sel(level=spec.level)
-    return da.values
+def _select_channels(
+    ds: xr.Dataset, channels: List[ChannelSpec], lat_dim: str, lon_dim: str
+) -> List[np.ndarray]:
+    """Pull every configured channel out of the store, in configured order.
+
+    Several channels share the same underlying variable at different
+    pressure levels (e.g. z1000/z850/z500/z50 are all `geopotential`).
+    Zarr reads are chunk-granular — if a variable's levels sit in the same
+    chunk (common; there are usually only a handful of pressure levels),
+    selecting each level separately re-downloads and re-decompresses that
+    same chunk once per level requested. Grouping by variable NAME and
+    pulling every needed level in a single `.sel(level=[...])` call fetches
+    each distinct variable exactly once, regardless of how many channels
+    it feeds.
+
+    Transposes to a guaranteed (time, [level,] lat_dim, lon_dim) axis order
+    BY NAME rather than assuming positional order — correct regardless of
+    how the store physically lays the array out.
+    """
+    by_name: Dict[str, List[ChannelSpec]] = {}
+    for spec in channels:
+        by_name.setdefault(spec.name, []).append(spec)
+
+    values_by_id: Dict[int, np.ndarray] = {}
+    for name, specs in by_name.items():
+        t0 = time.time()
+        da = ds[name]
+        if "level" in da.dims:
+            levels = [s.level for s in specs]
+            da = da.sel(level=levels).transpose("time", "level", lat_dim, lon_dim)
+            values = da.values  # one fetch, covering every level of this variable
+            for i, spec in enumerate(specs):
+                values_by_id[id(spec)] = values[:, i]
+            level_desc = f"{len(levels)} level(s): {levels}"
+        else:
+            da = da.transpose("time", lat_dim, lon_dim)
+            values = da.values
+            for spec in specs:
+                values_by_id[id(spec)] = values
+            level_desc = "surface/integrated"
+        print(f"  fetched {name} ({level_desc}) in {time.time() - t0:.1f}s")
+
+    return [values_by_id[id(spec)] for spec in channels]
 
 
 class GCSWeatherDataset(Dataset):
@@ -39,6 +77,8 @@ class GCSWeatherDataset(Dataset):
         end: str,
         flip_lat: bool,
         flip_lon: bool,
+        lat_dim: str = "latitude",
+        lon_dim: str = "longitude",
         stats: Optional[Dict[str, np.ndarray]] = None,
         cache_path: Optional[str] = None,
     ):
@@ -47,7 +87,11 @@ class GCSWeatherDataset(Dataset):
             gcs_bucket_path: e.g. "gs://TODO-bucket/TODO-path.zarr"
             channels: ordered list of variable names to stack into channels.
             start, end: inclusive date strings bounding this split.
-            flip_lat, flip_lon: axis corrections for this data source.
+            flip_lat, flip_lon: orientation corrections (e.g. store runs
+                north-to-south but the model expects south-to-north) — this
+                is DIFFERENT from axis order, which is now always handled
+                correctly via the named transpose above.
+            lat_dim, lon_dim: actual dimension names in the store.
             stats: normalisation stats dict {"mean": ..., "std": ...}. Pass
                 the stats computed on the TRAIN split when building the val
                 dataset, so val is normalised identically to train.
@@ -62,13 +106,27 @@ class GCSWeatherDataset(Dataset):
             cached = np.load(cache_path)
             arr = cached["data"]
             self.stats = {"mean": cached["mean"], "std": cached["std"]}
+            self.lat_values = cached["lat_values"]
         else:
-            ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1}, storage_options={"token": "anon"})
+            ds = open_dataset(gcs_bucket_path)
             ds = ds.sel(time=slice(start, end))
+
+            # Real latitude values from the store — flipped to match the
+            # data array below if flip_lat is set, so weights[i] always
+            # corresponds to row i of self.data regardless of orientation.
+            lat_values = ds[lat_dim].values
+            if flip_lat:
+                lat_values = lat_values[::-1]
+            self.lat_values = lat_values
 
             # TODO: confirm variable naming (spec.name) matches your GCS
             # store's schema exactly.
-            arr = np.stack([_select_channel(ds, c) for c in channels], axis=1)  # (T, C, H, W)
+            print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
+            t0 = time.time()
+            arr = np.stack(
+                _select_channels(ds, channels, lat_dim, lon_dim), axis=1
+            )  # (T, C, H, W) — H=lat_dim, W=lon_dim, guaranteed by the transpose above
+            print(f"Done fetching in {time.time() - t0:.1f}s")
 
             arr = flip_axes(arr, flip_lat=flip_lat, flip_lon=flip_lon)
 
@@ -76,8 +134,8 @@ class GCSWeatherDataset(Dataset):
 
             if cache_path:
                 Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-                np.savez(cache_path, data=arr,
-                         mean=self.stats["mean"], std=self.stats["std"])
+                np.savez(cache_path, data=arr, mean=self.stats["mean"],
+                         std=self.stats["std"], lat_values=self.lat_values)
 
         self.data = torch.from_numpy(arr).float()
 

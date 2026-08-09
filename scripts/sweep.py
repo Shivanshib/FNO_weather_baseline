@@ -17,7 +17,6 @@ import copy
 import csv
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -71,8 +70,7 @@ def main():
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training.learning_rate,
                                           weight_decay=cfg.training.weight_decay)
 
-            lat_degrees = np.linspace(-90, 90, cfg.data.resolution[1])
-            weights = lat_weights(lat_degrees)
+            weights = lat_weights(train_ds.lat_values)
 
             trainer = Trainer(model, optimizer, cfg.training, weights, device)
             trainer.fit(train_loader, val_loader)

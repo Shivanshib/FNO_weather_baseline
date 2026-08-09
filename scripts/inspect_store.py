@@ -23,7 +23,14 @@ import xarray as xr
 from weather_fno.config import Config, load_config
 
 
-def inspect(gcs_bucket_path: str, cfg: Config, label: str) -> None:
+def inspect(
+    gcs_bucket_path: str,
+    cfg: Config,
+    label: str,
+    flip_lat: bool,
+    flip_lon: bool,
+    derive_relative_humidity: bool = False,
+) -> None:
     print(f"\n{'=' * 70}\nInspecting: {label}\n{gcs_bucket_path}\n{'=' * 70}")
 
     ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1}, storage_options={"token": "anon"})
@@ -35,7 +42,13 @@ def inspect(gcs_bucket_path: str, cfg: Config, label: str) -> None:
     print("\nChecking configured channels against this store:")
     for spec in cfg.data.channels:
         if spec.name not in ds.data_vars:
-            print(f"  MISSING  {spec.short_name:6s} -> '{spec.name}' not found in store")
+            expected = (
+                " (expected — derive_relative_humidity=True for this target, "
+                "check the specific-humidity/temperature vars above instead)"
+                if spec.name == "relative_humidity" and derive_relative_humidity
+                else ""
+            )
+            print(f"  MISSING  {spec.short_name:6s} -> '{spec.name}' not found in store{expected}")
             continue
         da = ds[spec.name]
         level_info = ""
@@ -62,13 +75,14 @@ def inspect(gcs_bucket_path: str, cfg: Config, label: str) -> None:
         print("\nLatitude orientation:")
         print(f"  first={lat_vals[0]}, last={lat_vals[-1]}  "
               f"-> runs {'DESCENDING (north to south)' if descending else 'ASCENDING (south to north)'}")
-        print(f"  current config has flip_lat={cfg.data.flip_lat}")
+        print(f"  current config has flip_lat={flip_lat}")
 
     if lon_dim in ds.coords:
         lon_vals = ds[lon_dim].values
         convention = "[0, 360)" if lon_vals.max() > 180 else "[-180, 180)"
         print("\nLongitude convention:")
         print(f"  range=[{lon_vals.min()}, {lon_vals.max()}] -> looks like {convention}")
+        print(f"  current config has flip_lon={flip_lon}")
 
     if "time" in ds.coords:
         t = ds["time"].values
@@ -82,8 +96,16 @@ def main():
 
     cfg = load_config(args.config)
 
-    inspect(cfg.data.gcs_bucket_path, cfg, label="training store (coarse, 64x32)")
-    inspect(cfg.inference.gcs_bucket_path, cfg, label="inference store (higher-resolution)")
+    inspect(
+        cfg.data.gcs_bucket_path, cfg, label="training store (coarse, 64x32)",
+        flip_lat=cfg.data.flip_lat, flip_lon=cfg.data.flip_lon,
+    )
+    for target in cfg.inference.targets:
+        inspect(
+            target.gcs_bucket_path, cfg, label=f"inference store ({target.name})",
+            flip_lat=target.flip_lat, flip_lon=target.flip_lon,
+            derive_relative_humidity=target.derive_relative_humidity,
+        )
 
 
 if __name__ == "__main__":

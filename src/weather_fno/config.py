@@ -38,6 +38,12 @@ class DataConfig:
     val_start: str
     val_end: str
     stats_cache_path: str
+    # Actual dimension NAMES in the zarr store — used to transpose by name
+    # rather than assume positional axis order (see project notes on why).
+    # TODO: confirm these match your store — CDS-derived ERA5 almost always
+    # uses "latitude"/"longitude", but some pipelines abbreviate to "lat"/"lon".
+    lat_dim: str = "latitude"
+    lon_dim: str = "longitude"
 
 
 @dataclass
@@ -73,12 +79,26 @@ class MetricsConfig:
 
 
 @dataclass
-class InferenceConfig:
+class InferenceTarget:
+    """One inference-time data source. Different stores need different
+    preprocessing — e.g. a native high-resolution store may only provide
+    specific humidity (relative humidity must be derived), while a
+    resampled store closer to the coarse training data provides relative
+    humidity directly but needs the same latitude flip as training."""
+    name: str                 # short label, used in output filenames/logs
     gcs_bucket_path: str
     resolution: List[int]
+    flip_lat: bool
+    flip_lon: bool
+    derive_relative_humidity: bool = False
+
+
+@dataclass
+class InferenceConfig:
     checkpoint_path: str
     output_dir: str
-    derive_specific_humidity: bool = False
+    targets: List[InferenceTarget]
+    forecast_lead_steps: int = 28  # 28 x 6h = 7 days, at the training cadence
 
 
 @dataclass
@@ -106,13 +126,16 @@ def load_config(path: "str | os.PathLike") -> Config:
     data_raw = dict(raw["data"])
     data_raw["channels"] = [ChannelSpec(**c) for c in data_raw["channels"]]
 
+    inference_raw = dict(raw["inference"])
+    inference_raw["targets"] = [InferenceTarget(**t) for t in inference_raw["targets"]]
+
     cfg = Config(
         run_name=raw["run_name"],
         data=DataConfig(**data_raw),
         model=ModelConfig(**raw["model"]),
         training=TrainingConfig(**raw["training"]),
         metrics=MetricsConfig(**raw["metrics"]),
-        inference=InferenceConfig(**raw["inference"]),
+        inference=InferenceConfig(**inference_raw),
     )
 
     # Make sure output directories exist wherever this runs.

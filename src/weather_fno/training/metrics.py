@@ -50,7 +50,13 @@ def lat_weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Te
     return (w * (pred - target) ** 2).mean()
 
 
+def lat_weighted_rmse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """Latitude-weighted RMSE — same weighting as lat_weighted_mse, reported
+    in the data's actual units instead of squared units. More interpretable
+    for comparing against published baselines."""
+    return torch.sqrt(lat_weighted_mse(pred, target, weights))
+
+
 # TODO: fill in once channels/levels are finalised —
-#   - lat_weighted_rmse   (sqrt of the above, per WeatherBench2 eq. 2)
-#   - lat_weighted_acc    (anomaly correlation coefficient, needs a climatology)
+#   - lat_weighted_acc   (anomaly correlation coefficient, needs a climatology)
 #   - per-channel breakdowns for whichever variables you actually report

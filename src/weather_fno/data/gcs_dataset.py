@@ -2,9 +2,15 @@
 Streaming Dataset for coarse-resolution ERA5-style data stored as zarr on GCS.
 
 The 64x32, 20-channel training data is small enough to fit comfortably in
-memory, so this class opens the store lazily via xarray + gcsfs, applies
-preprocessing ONCE, and caches the result (in memory + optionally to disk)
-rather than re-reading/reprocessing from GCS every epoch.
+memory, so this class opens the store lazily via xarray + gcsfs and applies
+preprocessing ONCE per process. Only the small normalisation stats
+(mean/std/lat_values, a few KB) are ever persisted to disk -- NOT the full
+preprocessed array, which can be several GB for the full training date
+range and risks blowing a disk quota on space-constrained filesystems
+(university HPC home directories are commonly quota-limited). Every
+dataset build therefore always re-fetches from GCS -- a bounded, one-time
+network cost per process start (a few minutes for the full training
+range) rather than an unbounded disk-space cost.
 """
 
 from __future__ import annotations
@@ -95,47 +101,47 @@ class GCSWeatherDataset(Dataset):
             stats: normalisation stats dict {"mean": ..., "std": ...}. Pass
                 the stats computed on the TRAIN split when building the val
                 dataset, so val is normalised identically to train.
-            cache_path: optional path to cache the preprocessed array to disk
-                so repeat runs skip GCS entirely.
+            cache_path: optional path to persist the fitted normalisation
+                stats (mean/std/lat_values only — NOT the full data array,
+                see module docstring) so a later, separate process (e.g.
+                scripts/infer.py) can reuse the exact stats a training run
+                fit without needing that run's data still in memory. Only
+                written when stats=None (i.e. this call is FITTING fresh
+                stats — the train split), never when reusing stats passed
+                in from elsewhere (val/inference).
         """
         self.channels = channels
         self.flip_lat = flip_lat
         self.flip_lon = flip_lon
 
-        if cache_path and Path(cache_path).exists():
-            cached = np.load(cache_path)
-            arr = cached["data"]
-            self.stats = {"mean": cached["mean"], "std": cached["std"]}
-            self.lat_values = cached["lat_values"]
-        else:
-            ds = open_dataset(gcs_bucket_path)
-            ds = ds.sel(time=slice(start, end))
+        ds = open_dataset(gcs_bucket_path)
+        ds = ds.sel(time=slice(start, end))
 
-            # Real latitude values from the store — flipped to match the
-            # data array below if flip_lat is set, so weights[i] always
-            # corresponds to row i of self.data regardless of orientation.
-            lat_values = ds[lat_dim].values
-            if flip_lat:
-                lat_values = lat_values[::-1]
-            self.lat_values = lat_values
+        # Real latitude values from the store — flipped to match the
+        # data array below if flip_lat is set, so weights[i] always
+        # corresponds to row i of self.data regardless of orientation.
+        lat_values = ds[lat_dim].values
+        if flip_lat:
+            lat_values = lat_values[::-1]
+        self.lat_values = lat_values
 
-            # TODO: confirm variable naming (spec.name) matches your GCS
-            # store's schema exactly.
-            print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
-            t0 = time.time()
-            arr = np.stack(
-                _select_channels(ds, channels, lat_dim, lon_dim), axis=1
-            )  # (T, C, H, W) — H=lat_dim, W=lon_dim, guaranteed by the transpose above
-            print(f"Done fetching in {time.time() - t0:.1f}s")
+        # TODO: confirm variable naming (spec.name) matches your GCS
+        # store's schema exactly.
+        print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
+        t0 = time.time()
+        arr = np.stack(
+            _select_channels(ds, channels, lat_dim, lon_dim), axis=1
+        )  # (T, C, H, W) — H=lat_dim, W=lon_dim, guaranteed by the transpose above
+        print(f"Done fetching in {time.time() - t0:.1f}s")
 
-            arr = flip_axes(arr, flip_lat=flip_lat, flip_lon=flip_lon)
+        arr = flip_axes(arr, flip_lat=flip_lat, flip_lon=flip_lon)
 
-            arr, self.stats = normalise(arr, stats=stats)
+        arr, self.stats = normalise(arr, stats=stats)
 
-            if cache_path:
-                Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-                np.savez(cache_path, data=arr, mean=self.stats["mean"],
-                         std=self.stats["std"], lat_values=self.lat_values)
+        if cache_path and stats is None:
+            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+            np.savez(cache_path, mean=self.stats["mean"], std=self.stats["std"],
+                     lat_values=self.lat_values)
 
         self.data = torch.from_numpy(arr).float()
 

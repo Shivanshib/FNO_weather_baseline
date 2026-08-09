@@ -26,7 +26,7 @@ from weather_fno.config import Config, load_config
 def inspect(gcs_bucket_path: str, cfg: Config, label: str) -> None:
     print(f"\n{'=' * 70}\nInspecting: {label}\n{gcs_bucket_path}\n{'=' * 70}")
 
-    ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1})
+    ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1}, storage_options={"token": "anon"})
 
     print(f"\nAvailable data_vars ({len(ds.data_vars)}):")
     for v in sorted(ds.data_vars):

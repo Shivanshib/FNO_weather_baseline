@@ -36,7 +36,7 @@ def load_inference_data(cfg: Config) -> np.ndarray:
     TODO: fill in the actual variable names available at the higher
     resolution once confirmed.
     """
-    ds = xr.open_zarr(cfg.inference.gcs_bucket_path, chunks={"time": 1})
+    ds = xr.open_zarr(cfg.inference.gcs_bucket_path, chunks={"time": 1}, storage_options={"token":"anon"})
 
     channel_arrays = []
     for spec in cfg.data.channels:

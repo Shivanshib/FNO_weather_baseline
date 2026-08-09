@@ -63,7 +63,7 @@ class GCSWeatherDataset(Dataset):
             arr = cached["data"]
             self.stats = {"mean": cached["mean"], "std": cached["std"]}
         else:
-            ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1})
+            ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1}, storage_options={"token": "anon"})
             ds = ds.sel(time=slice(start, end))
 
             # TODO: confirm variable naming (spec.name) matches your GCS

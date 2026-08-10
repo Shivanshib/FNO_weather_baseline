@@ -15,8 +15,9 @@ the next input (autoregressive rollout) — not one forward pass.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -33,7 +34,12 @@ from weather_fno.models.fno_baseline import build_model
 from weather_fno.utils.checkpoint import load_checkpoint
 
 
-def load_inference_data(cfg: Config, target: InferenceTarget, n_timesteps: int = 1) -> np.ndarray:
+def load_inference_data(
+    cfg: Config,
+    target: InferenceTarget,
+    n_timesteps: int = 1,
+    start_date: Optional[str] = None,
+) -> np.ndarray:
     """
     Open one inference-time GCS store and build a (T, C, H, W) array
     matching cfg.data.channels, in the same channel order used for
@@ -48,6 +54,19 @@ def load_inference_data(cfg: Config, target: InferenceTarget, n_timesteps: int =
     scoring a forecast against, as inference/evaluate.py does — still
     bounded and deliberate, never "the whole store".
 
+    start_date: if given, starts from the first available timestep AT OR
+    AFTER this date (e.g. "2016-06-01") instead of the store's first
+    available timestep overall. Both inference targets share the same
+    underlying real time index (confirmed directly against the stores —
+    both start 1959-01-01), so passing the same start_date to both targets
+    guarantees they're compared on identical real timestamps. Without
+    this, the default (None) uses index 0, which is 1959-01-01 for these
+    stores — decades before the training window (2000-2014), which mixes
+    "does this generalise to unseen resolution" with "does this
+    generalise to a completely different era" in a way that's hard to
+    disentangle. Set to a date within/near the training or validation
+    period for a cleaner resolution-only comparison.
+
     Relative humidity (r500, r850) isn't available directly in every
     inference store — target.derive_relative_humidity switches on deriving
     it per pressure level from specific humidity and temperature at that
@@ -57,6 +76,8 @@ def load_inference_data(cfg: Config, target: InferenceTarget, n_timesteps: int =
     coarse training store) should leave derive_relative_humidity=False.
     """
     ds = open_dataset(target.gcs_bucket_path)
+    if start_date is not None:
+        ds = ds.sel(time=slice(start_date, None))
     ds = ds.isel(time=slice(0, n_timesteps))
 
     channel_arrays = []
@@ -112,14 +133,29 @@ def rollout(model, x0: torch.Tensor, n_steps: int, device) -> np.ndarray:
 def load_trained_model(cfg: Config, device):
     """Build the model and load cfg.inference.checkpoint_path into it —
     shared between run_inference and evaluate.py so both load the exact
-    same way."""
+    same way.
+
+    load_checkpoint() returns None when nothing exists at the given path
+    -- correct for Trainer's auto-resume (no checkpoint yet just means
+    "start fresh"), but for inference a missing checkpoint must never be
+    silent: falling through would leave `model` at its random
+    initialisation from build_model() and produce a plausible-looking but
+    meaningless forecast with no error at all. Explicitly check and raise.
+    """
     model = build_model(cfg.model)
-    load_checkpoint(
+    ckpt = load_checkpoint(
         str(Path(cfg.inference.checkpoint_path).parent),
         Path(cfg.inference.checkpoint_path).name,
         model,
         device=device,
     )
+    if ckpt is None:
+        raise FileNotFoundError(
+            f"No checkpoint found at '{cfg.inference.checkpoint_path}' "
+            f"(resolved relative to cwd={os.getcwd()}). The model would otherwise "
+            f"silently run with its random initial weights instead of the trained "
+            f"ones -- check the path is correct relative to where this is being run from."
+        )
     return model.eval().to(device)
 
 
@@ -145,7 +181,7 @@ def run_inference(cfg: Config, train_stats: Dict[str, np.ndarray]) -> Dict[str, 
 
     all_predictions: Dict[str, np.ndarray] = {}
     for target in cfg.inference.targets:
-        arr = load_inference_data(cfg, target)
+        arr = load_inference_data(cfg, target, start_date=cfg.inference.start_date)
         arr_norm = normalise_for_inference(arr, train_stats)
 
         # Initial condition: first available timestep, kept batched (1, C, H, W).

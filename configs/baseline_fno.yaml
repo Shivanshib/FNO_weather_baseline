@@ -119,6 +119,17 @@ inference:
   # length, just evaluated on different starting grids.
   forecast_lead_steps: 28
 
+  # Shared starting timestep for every target's rollout (not per-target --
+  # confirmed both stores share the same real time index, both starting
+  # 1959-01-01, so one shared date guarantees every target is compared on
+  # identical real timestamps). null (default) = the store's first
+  # available timestep, which is 1959-01-01 -- decades before the training
+  # window (2000-2014) and validation window (2015-2016). For a cleaner
+  # resolution-only comparison (not also testing 65+ years of temporal
+  # generalisation), set an explicit date within/near those windows, e.g.
+  # start_date: "2016-06-01"
+  start_date: null
+
   # Each target is a separate GCS store to run the SAME trained model on,
   # autoregressively, with its OWN preprocessing needs — a store's
   # resolution and its axis-flip/derivation requirements are independent of

@@ -99,6 +99,15 @@ class InferenceConfig:
     output_dir: str
     targets: List[InferenceTarget]
     forecast_lead_steps: int = 28  # 28 x 6h = 7 days, at the training cadence
+    # Shared starting timestep for every target's rollout -- a single field
+    # (not per-target) so all targets are guaranteed to start from the same
+    # real timestamp when compared against each other, e.g. "2016-06-01".
+    # None (the default) means "the first available timestep in the
+    # store", which is 1959-01-01 for these WeatherBench2 stores -- outside
+    # the training window entirely. Set an explicit date within/near the
+    # training or validation period for a cleaner resolution-generalisation
+    # test that isn't also testing generalisation across 40+ years of time.
+    start_date: Optional[str] = None
 
 
 @dataclass

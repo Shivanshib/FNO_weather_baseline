@@ -59,11 +59,14 @@ def main():
     out_dir = Path(cfg.inference.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    start_desc = cfg.inference.start_date or "the store's first available timestep"
     for target in cfg.inference.targets:
-        print(f"[{target.name}] fetching {n_steps + 1} timesteps and running the full "
-              f"{n_steps}-step ({n_steps * 6}h / {n_steps * 6 / 24:.1f}d) autoregressive rollout...")
+        print(f"[{target.name}] fetching {n_steps + 1} timesteps starting from {start_desc} "
+              f"and running the full {n_steps}-step ({n_steps * 6}h / {n_steps * 6 / 24:.1f}d) "
+              f"autoregressive rollout...")
 
-        arr = load_inference_data(cfg, target, n_timesteps=n_steps + 1)
+        arr = load_inference_data(cfg, target, n_timesteps=n_steps + 1,
+                                   start_date=cfg.inference.start_date)
         initial_condition = arr[0, channel_idx]  # (H, W)
         ground_truth = arr[1:, channel_idx]      # (n_steps, H, W)
 

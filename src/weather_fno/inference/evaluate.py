@@ -70,7 +70,8 @@ def evaluate_target(
     NOT persisted to disk by this function).
     """
     n_steps = cfg.inference.forecast_lead_steps
-    arr = load_inference_data(cfg, target, n_timesteps=n_steps + 1)  # (n_steps+1, C, H, W)
+    arr = load_inference_data(cfg, target, n_timesteps=n_steps + 1,
+                               start_date=cfg.inference.start_date)  # (n_steps+1, C, H, W)
     initial_condition = arr[0:1]
     ground_truth = arr[1:]
 

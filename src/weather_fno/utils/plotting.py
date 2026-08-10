@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import matplotlib
@@ -104,6 +104,22 @@ def plot_forecast_maps(
     kind of quantity (signed, meaningfully centred at 0) that viridis
     would misrepresent.
 
+    The shared vmin/vmax is deliberately taken from GROUND TRUTH ONLY, not
+    forecast — ground truth is real, physically-bounded weather data, so
+    its own range is always a sensible scale. If vmin/vmax were also
+    stretched to fit the forecast (as an earlier version of this function
+    did), a single badly-diverged forecast value (e.g. a baseline model
+    producing implausible values at a resolution it wasn't trained for)
+    would blow out the colour scale for EVERY panel, including ground
+    truth, making even correct, normally-varying ground truth data look
+    like a flat, washed-out block. Forecast values outside the ground
+    truth's range simply saturate to the colour scale's boundary colour
+    (matplotlib's default `imshow` behaviour for out-of-range values with
+    vmin/vmax set) — which is actually more informative here, since
+    saturated regions directly show where and how much the forecast has
+    left the physically plausible range, rather than hiding it by
+    rescaling everything to fit.
+
     Args:
         result: one target's result dict from inference/evaluate.py
             (needs "forecast" and "ground_truth", both (n_steps, C, H, W)).
@@ -120,8 +136,8 @@ def plot_forecast_maps(
     ground_truth = result["ground_truth"][:, ch_idx]
     lead_hours = result["lead_hours"]
 
-    vmin = min(forecast[lead_step_indices].min(), ground_truth[lead_step_indices].min())
-    vmax = max(forecast[lead_step_indices].max(), ground_truth[lead_step_indices].max())
+    vmin = ground_truth[lead_step_indices].min()
+    vmax = ground_truth[lead_step_indices].max()
     extent = [lon.min(), lon.max(), lat.min(), lat.max()]
 
     nrows = len(lead_step_indices)
@@ -157,4 +173,45 @@ def plot_forecast_maps(
     fig.suptitle(f"{title} — {channel_short_name}".strip(" —"))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_power_spectrum(
+    spectra: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    out_path: str,
+    title: str = "",
+    n_modes_cutoff: Optional[float] = None,
+) -> None:
+    """
+    Log-log plot of one or more radial power spectra (see
+    utils/spectral.py::radial_power_spectrum) on the same axes, for
+    comparing spectral content — e.g. forecast vs ground truth at a given
+    lead time, or the same field across different resolutions.
+
+    Args:
+        spectra: {label: (wavenumber, power)} — one line per label.
+        n_modes_cutoff: if given, draws a vertical reference line at this
+            wavenumber — pass the FNO's own n_modes value to show exactly
+            where the model stops retaining spectral content, directly on
+            the same plot as the data's actual spectral shape.
+    """
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for label, (k, power) in spectra.items():
+        # Skip k=0 (the DC/mean component) -- not meaningful on a log axis
+        # and would dominate the y-range without adding information.
+        ax.loglog(k[1:], power[1:], label=label)
+
+    if n_modes_cutoff is not None:
+        ax.axvline(n_modes_cutoff, color="gray", linestyle="--",
+                   label=f"FNO mode cutoff (k={n_modes_cutoff})")
+
+    ax.set_xlabel("wavenumber (cycles per domain)")
+    ax.set_ylabel("power")
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both")
+
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

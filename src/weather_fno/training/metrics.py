@@ -57,6 +57,26 @@ def lat_weighted_rmse(pred: torch.Tensor, target: torch.Tensor, weights: torch.T
     return torch.sqrt(lat_weighted_mse(pred, target, weights))
 
 
+def lat_weighted_rmse_per_channel(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """
+    Same as lat_weighted_rmse but keeps the channel dimension instead of
+    averaging over it — one RMSE value per channel, in that channel's own
+    physical units. Different channels have very different natural
+    magnitudes (e.g. geopotential in the thousands vs temperature in the
+    hundreds), so per-channel is what you actually want for verification
+    plots/scorecards rather than one number averaged across all of them.
+
+    Args:
+        pred, target: shape (B, C, H, W)
+        weights: shape (H,)
+
+    Returns:
+        Tensor of shape (C,).
+    """
+    w = weights.view(1, 1, -1, 1).to(pred.device)
+    mse_per_channel = (w * (pred - target) ** 2).mean(dim=(0, 2, 3))
+    return torch.sqrt(mse_per_channel)
+
+
 # TODO: fill in once channels/levels are finalised —
 #   - lat_weighted_acc   (anomaly correlation coefficient, needs a climatology)
-#   - per-channel breakdowns for whichever variables you actually report

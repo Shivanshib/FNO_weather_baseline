@@ -33,18 +33,20 @@ from weather_fno.models.fno_baseline import build_model
 from weather_fno.utils.checkpoint import load_checkpoint
 
 
-def load_inference_data(cfg: Config, target: InferenceTarget) -> np.ndarray:
+def load_inference_data(cfg: Config, target: InferenceTarget, n_timesteps: int = 1) -> np.ndarray:
     """
     Open one inference-time GCS store and build a (T, C, H, W) array
     matching cfg.data.channels, in the same channel order used for
     training.
 
-    Only the first available timestep is ever used (as the initial
-    condition for the autoregressive rollout in run_inference), so the
-    store is sliced down to that single timestep BEFORE pulling any values
-    out of zarr — reading every timestep first (as an earlier version of
-    this function did) is infeasible for a multi-decade, full-resolution
-    store.
+    Only `n_timesteps` are ever pulled (default 1 — just the initial
+    condition for the autoregressive rollout in run_inference), sliced
+    BEFORE pulling any values out of zarr — reading every timestep first
+    (as an earlier version of this function did) is infeasible for a
+    multi-decade, full-resolution store. Pass a larger n_timesteps (e.g.
+    forecast_lead_steps + 1) to also pull ground-truth timesteps for
+    scoring a forecast against, as inference/evaluate.py does — still
+    bounded and deliberate, never "the whole store".
 
     Relative humidity (r500, r850) isn't available directly in every
     inference store — target.derive_relative_humidity switches on deriving
@@ -53,13 +55,9 @@ def load_inference_data(cfg: Config, target: InferenceTarget) -> np.ndarray:
     handled here, since each has a different ChannelSpec with a different
     .level. Stores that provide relative_humidity directly (like the
     coarse training store) should leave derive_relative_humidity=False.
-
-    TODO: fill in the actual raw specific-humidity/temperature variable
-    names below once confirmed against the native high-resolution store
-    (see scripts/inspect_store.py).
     """
     ds = open_dataset(target.gcs_bucket_path)
-    ds = ds.isel(time=slice(0, 1))  # only the initial-condition timestep is ever used
+    ds = ds.isel(time=slice(0, n_timesteps))
 
     channel_arrays = []
     for spec in cfg.data.channels:
@@ -85,6 +83,46 @@ def load_inference_data(cfg: Config, target: InferenceTarget) -> np.ndarray:
     return arr
 
 
+def rollout(model, x0: torch.Tensor, n_steps: int, device) -> np.ndarray:
+    """
+    Autoregressive rollout: feed the model's own output back in as the next
+    input, n_steps times. Shared between run_inference (below) and
+    inference/evaluate.py so the exact same stepping logic is used whether
+    or not the result is being scored against ground truth.
+
+    Args:
+        x0: normalised initial condition, shape (1, C, H, W).
+        n_steps: number of 6-hour steps to roll forward.
+
+    Returns:
+        Normalised predictions, shape (n_steps, C, H, W), still on CPU as
+        a numpy array (not denormalised — caller's responsibility, since
+        run_inference and evaluate.py denormalise at slightly different
+        points).
+    """
+    x = x0.to(device)
+    predictions_norm = []
+    with torch.no_grad():
+        for _ in range(n_steps):
+            x = model(x)
+            predictions_norm.append(x.cpu().numpy())
+    return np.concatenate(predictions_norm, axis=0)
+
+
+def load_trained_model(cfg: Config, device):
+    """Build the model and load cfg.inference.checkpoint_path into it —
+    shared between run_inference and evaluate.py so both load the exact
+    same way."""
+    model = build_model(cfg.model)
+    load_checkpoint(
+        str(Path(cfg.inference.checkpoint_path).parent),
+        Path(cfg.inference.checkpoint_path).name,
+        model,
+        device=device,
+    )
+    return model.eval().to(device)
+
+
 def run_inference(cfg: Config, train_stats: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     """
     Runs one autoregressive rollout per target in cfg.inference.targets,
@@ -101,15 +139,7 @@ def run_inference(cfg: Config, train_stats: Dict[str, np.ndarray]) -> Dict[str, 
     (n_steps, C, H, W) in physical (denormalised) units.
     """
     device = torch.device(cfg.training.device if torch.cuda.is_available() else "cpu")
-
-    model = build_model(cfg.model)
-    load_checkpoint(
-        str(Path(cfg.inference.checkpoint_path).parent),
-        Path(cfg.inference.checkpoint_path).name,
-        model,
-        device=device,
-    )
-    model.eval().to(device)
+    model = load_trained_model(cfg, device)
 
     Path(cfg.inference.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -119,15 +149,8 @@ def run_inference(cfg: Config, train_stats: Dict[str, np.ndarray]) -> Dict[str, 
         arr_norm = normalise_for_inference(arr, train_stats)
 
         # Initial condition: first available timestep, kept batched (1, C, H, W).
-        x = torch.from_numpy(arr_norm[0:1]).float().to(device)
-
-        predictions_norm = []
-        with torch.no_grad():
-            for _ in range(cfg.inference.forecast_lead_steps):
-                x = model(x)
-                predictions_norm.append(x.cpu().numpy())
-
-        predictions_norm = np.concatenate(predictions_norm, axis=0)  # (n_steps, C, H, W)
+        x0 = torch.from_numpy(arr_norm[0:1]).float()
+        predictions_norm = rollout(model, x0, cfg.inference.forecast_lead_steps, device)
         predictions = denormalise(predictions_norm, train_stats)
 
         out_path = Path(cfg.inference.output_dir) / f"{target.name}_forecast.npy"

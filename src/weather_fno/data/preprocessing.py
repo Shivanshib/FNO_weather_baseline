@@ -17,9 +17,13 @@ def flip_axes(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:
     Flip spatial axes of an array shaped (T, C, H, W) where H is the
     latitude axis and W is the longitude axis.
 
-    TODO: confirm the actual axis order and flips needed against the real
-    data — this is a placeholder based on the common case where the coarse
-    store's latitude runs north-to-south but the model expects south-to-north.
+    flip_lat/flip_lon are per-source orientation corrections, confirmed
+    directly against live GCS coordinate metadata (not guessed): the
+    coarse/1.5deg conservatively-regridded stores have latitude stored
+    ascending and need no flip; the native full-resolution store uses the
+    classic ECMWF descending convention and does need one. See each
+    source's flip_lat/flip_lon comments in configs/baseline_fno.yaml for
+    the confirmed value per store.
     """
     if flip_lat:
         arr = arr[..., ::-1, :]

@@ -40,17 +40,21 @@ def main():
 
     cfg = load_config(args.config)
 
-    # Reuse the exact normalisation stats the training run fit -- never
+    # 1. Load the exact normalisation stats the training run fit -- never
     # re-fit stats on inference/eval data.
     train_cache_path = cfg.data.stats_cache_path.replace("normalisation_stats", "train_cache")
     cached = np.load(train_cache_path)
     train_stats = {"mean": cached["mean"], "std": cached["std"]}
 
+    # 2. Run the full scored rollout for every configured target (all the
+    # actual compute happens here -- everything below is just plotting
+    # already-computed results).
     results = run_evaluation(cfg, train_stats)
 
     out_dir = Path(cfg.inference.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 3. Per target: save the raw metrics, then two plots from them.
     for target in cfg.inference.targets:
         result = results[target.name]
 

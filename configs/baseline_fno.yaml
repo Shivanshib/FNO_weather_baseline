@@ -92,7 +92,7 @@ training:
   batch_size: 32
   learning_rate: 1.0e-3
   weight_decay: 1.0e-5
-  epochs: 100
+  epochs: 150
   num_workers: 4
   device: "cuda"                 # falls back to cpu automatically if unavailable
   early_stopping_patience: 15
@@ -102,12 +102,13 @@ training:
   plot_dir: "outputs/plots"
   log_dir: "outputs/logs"
 
-# Metrics to track during training/validation. TODO: fill in the specific
-# variables + pressure levels you want lat-weighted MSE etc. computed over
-# once your channel list is finalised.
-metrics:
-  primary: "lat_weighted_mse"
-  additional: []    # e.g. ["lat_weighted_rmse", "lat_weighted_acc"]
+# Note: there's no `metrics:` section -- training/trainer.py always scores
+# with lat_weighted_mse directly (see training/metrics.py), so a config
+# section for it was never actually read anywhere and has been removed.
+# Additional metrics (RMSE, per-channel breakdowns) already exist in
+# training/metrics.py and get used directly by inference/evaluate.py
+# instead, since that's where per-channel/lead-time reporting actually
+# happens -- not during training.
 
 inference:
   checkpoint_path: "outputs/checkpoints/best.pt"

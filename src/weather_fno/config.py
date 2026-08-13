@@ -9,7 +9,7 @@ need editing when moving between machines.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,9 +19,12 @@ import yaml
 
 @dataclass
 class ChannelSpec:
-    short_name: str          # e.g. "t850" — used for logging/plots and for
-                              #  matching special-case channels like a
-                              #  derived specific-humidity field
+    short_name: str          # e.g. "t850" — used for logging/plots/lookups
+                              #  (e.g. selecting a channel by name in a
+                              #  notebook); NOT used to decide derivation --
+                              #  that matches on `name` instead (see
+                              #  inference/predict.py::load_inference_data,
+                              #  which derives relative_humidity by name).
     name: str                 # actual variable name in the GCS/zarr store
     level: Optional[int] = None   # pressure level in hPa; None = surface/integrated field
 
@@ -40,8 +43,8 @@ class DataConfig:
     stats_cache_path: str
     # Actual dimension NAMES in the zarr store — used to transpose by name
     # rather than assume positional axis order (see project notes on why).
-    # TODO: confirm these match your store — CDS-derived ERA5 almost always
-    # uses "latitude"/"longitude", but some pipelines abbreviate to "lat"/"lon".
+    # Confirmed against all three WeatherBench2 stores this project uses
+    # (coarse, native_highres, 1p5deg): all use "latitude"/"longitude".
     lat_dim: str = "latitude"
     lon_dim: str = "longitude"
 
@@ -70,12 +73,6 @@ class TrainingConfig:
     checkpoint_dir: str
     plot_dir: str
     log_dir: str
-
-
-@dataclass
-class MetricsConfig:
-    primary: str
-    additional: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -116,7 +113,6 @@ class Config:
     data: DataConfig
     model: ModelConfig
     training: TrainingConfig
-    metrics: MetricsConfig
     inference: InferenceConfig
 
 
@@ -129,25 +125,33 @@ def resolve_device(requested: str) -> torch.device:
 
 
 def load_config(path: "str | os.PathLike") -> Config:
+    # 1. Parse the YAML into a plain nested dict.
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
 
+    # 2. Build the two list-of-dataclass fields by hand -- `**kwargs`
+    # unpacking only works one level deep, so `data.channels` (a list of
+    # dicts) and `inference.targets` (same) need converting to lists of
+    # ChannelSpec/InferenceTarget BEFORE the parent dataclass is built.
     data_raw = dict(raw["data"])
     data_raw["channels"] = [ChannelSpec(**c) for c in data_raw["channels"]]
 
     inference_raw = dict(raw["inference"])
     inference_raw["targets"] = [InferenceTarget(**t) for t in inference_raw["targets"]]
 
+    # 3. Build every section's dataclass. Any YAML key that doesn't match a
+    # dataclass field name raises TypeError here -- that's deliberate,
+    # it's how a typo'd or stale config key gets caught immediately
+    # instead of silently being ignored.
     cfg = Config(
         run_name=raw["run_name"],
         data=DataConfig(**data_raw),
         model=ModelConfig(**raw["model"]),
         training=TrainingConfig(**raw["training"]),
-        metrics=MetricsConfig(**raw["metrics"]),
         inference=InferenceConfig(**inference_raw),
     )
 
-    # Make sure output directories exist wherever this runs.
+    # 4. Make sure output directories exist wherever this runs.
     for d in [cfg.training.output_dir, cfg.training.checkpoint_dir,
               cfg.training.plot_dir, cfg.training.log_dir]:
         Path(d).mkdir(parents=True, exist_ok=True)

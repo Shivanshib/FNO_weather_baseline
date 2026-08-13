@@ -43,11 +43,14 @@ def main():
 
     cfg = load_config(args.config)
 
+    # 1. Resolve --channel to a column index into cfg.data.channels, fail
+    # fast with the valid options if it's not a real short_name.
     channel_idx = next((i for i, c in enumerate(cfg.data.channels) if c.short_name == args.channel), None)
     if channel_idx is None:
         available = [c.short_name for c in cfg.data.channels]
         raise ValueError(f"--channel '{args.channel}' not found. Available: {available}")
 
+    # 2. Load model + the training run's normalisation stats.
     train_cache_path = cfg.data.stats_cache_path.replace("normalisation_stats", "train_cache")
     cached = np.load(train_cache_path)
     train_stats = {"mean": cached["mean"], "std": cached["std"]}
@@ -59,6 +62,8 @@ def main():
     out_dir = Path(cfg.inference.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 3. Per target: fetch data, roll the model forward the full
+    # forecast_lead_steps, and save just this one channel's maps.
     start_desc = cfg.inference.start_date or "the store's first available timestep"
     for target in cfg.inference.targets:
         print(f"[{target.name}] fetching {n_steps + 1} timesteps starting from {start_desc} "

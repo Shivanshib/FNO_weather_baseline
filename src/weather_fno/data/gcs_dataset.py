@@ -90,7 +90,8 @@ class GCSWeatherDataset(Dataset):
     ):
         """
         Args:
-            gcs_bucket_path: e.g. "gs://TODO-bucket/TODO-path.zarr"
+            gcs_bucket_path: e.g. cfg.data.gcs_bucket_path, the coarse
+                training store's zarr path.
             channels: ordered list of variable names to stack into channels.
             start, end: inclusive date strings bounding this split.
             flip_lat, flip_lon: orientation corrections (e.g. store runs
@@ -104,20 +105,23 @@ class GCSWeatherDataset(Dataset):
             cache_path: optional path to persist the fitted normalisation
                 stats (mean/std/lat_values only — NOT the full data array,
                 see module docstring) so a later, separate process (e.g.
-                scripts/infer.py) can reuse the exact stats a training run
-                fit without needing that run's data still in memory. Only
-                written when stats=None (i.e. this call is FITTING fresh
-                stats — the train split), never when reusing stats passed
-                in from elsewhere (val/inference).
+                scripts/evaluate.py, scripts/predict_single_variable.py)
+                can reuse the exact stats a training run fit without
+                needing that run's data still in memory. Only written when
+                stats=None (i.e. this call is FITTING fresh stats — the
+                train split), never when reusing stats passed in from
+                elsewhere (val/inference).
         """
         self.channels = channels
         self.flip_lat = flip_lat
         self.flip_lon = flip_lon
 
+        # 1. Open the store (lazy -- no data downloaded yet) and narrow to
+        # this split's date range.
         ds = open_dataset(gcs_bucket_path)
         ds = ds.sel(time=slice(start, end))
 
-        # Real latitude values from the store — flipped to match the
+        # 2. Real latitude values from the store — flipped to match the
         # data array below if flip_lat is set, so weights[i] always
         # corresponds to row i of self.data regardless of orientation.
         lat_values = ds[lat_dim].values
@@ -125,8 +129,9 @@ class GCSWeatherDataset(Dataset):
             lat_values = lat_values[::-1]
         self.lat_values = lat_values
 
-        # TODO: confirm variable naming (spec.name) matches your GCS
-        # store's schema exactly.
+        # 3. Fetch every configured channel (variable naming confirmed
+        # against the real store via scripts/inspect_store.py and a
+        # successful real training run -- not a guess).
         print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
         t0 = time.time()
         arr = np.stack(
@@ -134,10 +139,13 @@ class GCSWeatherDataset(Dataset):
         )  # (T, C, H, W) — H=lat_dim, W=lon_dim, guaranteed by the transpose above
         print(f"Done fetching in {time.time() - t0:.1f}s")
 
+        # 4. Orientation correction, then per-channel standardisation.
         arr = flip_axes(arr, flip_lat=flip_lat, flip_lon=flip_lon)
-
         arr, self.stats = normalise(arr, stats=stats)
 
+        # 5. Persist ONLY the small stats (see module docstring) so a
+        # separate later process can normalise identically without
+        # needing this run's data.
         if cache_path and stats is None:
             Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
             np.savez(cache_path, mean=self.stats["mean"], std=self.stats["std"],
@@ -146,11 +154,17 @@ class GCSWeatherDataset(Dataset):
         self.data = torch.from_numpy(arr).float()
 
     def __len__(self) -> int:
-        # TODO: adjust once you decide the input/target pairing (e.g. single
-        # timestep -> next timestep for a baseline autoregressive setup).
+        # One less than the timestep count: __getitem__ pairs index i with
+        # i+1 (single-step next-timestep prediction -- see __getitem__).
         return self.data.shape[0] - 1
 
     def __getitem__(self, idx: int):
+        # x = current timestep, y = the very next stored timestep. Every
+        # configured store is uniformly 6-hourly (confirmed against real
+        # data, no gaps within the configured date ranges), so this pairing
+        # IS exactly "predict 6 hours ahead" -- there's no separate horizon
+        # setting anywhere else; it's implicitly whatever gap exists
+        # between adjacent rows of self.data.
         x = self.data[idx]
         y = self.data[idx + 1]
         return x, y

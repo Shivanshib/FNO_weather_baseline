@@ -5,6 +5,15 @@ Separate from predict.py because this needs GROUND TRUTH at every lead
 time (not just an initial condition) to compare against — predict.py stays
 focused on "produce a forecast", this module is "how good was it".
 
+Main process, per target, in evaluate_target():
+  1. fetch an initial condition PLUS forecast_lead_steps of real ground
+     truth (load_inference_data with n_timesteps = lead_steps + 1)
+  2. run the SAME autoregressive rollout predict.py uses, starting from
+     that initial condition
+  3. at every lead time, score the rollout's prediction against ground
+     truth AND against a persistence baseline (repeat the initial
+     condition unchanged) -- lat-weighted RMSE per channel
+
 Deliberately keeps the full forecast/ground-truth arrays in memory only,
 never writing them to disk: for the native full-resolution target, a
 single (forecast_lead_steps, 20, 721, 1440) float32 array is already ~2GB,
@@ -58,7 +67,7 @@ def evaluate_target(
 ) -> dict:
     """
     Fetches an initial condition PLUS forecast_lead_steps of ground truth
-    for `target`, runs the same autoregressive rollout run_inference uses,
+    for `target`, runs the autoregressive rollout (predict.py::rollout),
     and scores it against ground truth AND a persistence baseline
     (repeating the initial condition unchanged at every lead time — the
     standard "is the model adding any skill at all beyond doing nothing"
@@ -69,17 +78,20 @@ def evaluate_target(
     plotting (initial_condition, forecast, ground_truth — physical units,
     NOT persisted to disk by this function).
     """
+    # 1. Fetch initial condition + real ground truth for every lead time.
     n_steps = cfg.inference.forecast_lead_steps
     arr = load_inference_data(cfg, target, n_timesteps=n_steps + 1,
                                start_date=cfg.inference.start_date)  # (n_steps+1, C, H, W)
     initial_condition = arr[0:1]
     ground_truth = arr[1:]
 
+    # 2. Autoregressive rollout from that same initial condition.
     arr_norm = normalise_for_inference(arr, train_stats)
     x0 = torch.from_numpy(arr_norm[0:1]).float()
     predictions_norm = rollout(model, x0, n_steps, device)
     forecast = denormalise(predictions_norm, train_stats)
 
+    # 3. Score model AND persistence against ground truth, per lead time.
     n_channels = len(cfg.data.channels)
     model_rmse = np.zeros((n_steps, n_channels), dtype=np.float32)
     persistence_rmse = np.zeros((n_steps, n_channels), dtype=np.float32)

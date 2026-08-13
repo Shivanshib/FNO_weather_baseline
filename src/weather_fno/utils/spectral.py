@@ -45,8 +45,13 @@ def radial_power_spectrum(field: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     norm="ortho" (dividing by sqrt(N)) leaves a residual factor of N in
     the squared magnitude. Only norm="forward" gives a peak power that's
     independent of how many gridpoints sample the same physical field --
-    verified directly against a synthetic single-wavenumber field sampled
-    at two different grid sizes (see tests alongside this module).
+    verified by hand against a synthetic single-wavenumber field (e.g.
+    np.cos(2*pi*lon/360)) sampled at two different grid sizes: with
+    norm="forward" the peak power at that wavenumber comes out identical
+    for both; with the default norm or norm="ortho" it does not. There is
+    no tests/ directory in this project (no automated test suite) -- this
+    was a one-off manual check, worth re-doing by hand if this function
+    is ever changed.
     """
     h, w = field.shape
     fft = np.fft.fft2(field - field.mean(), norm="forward")

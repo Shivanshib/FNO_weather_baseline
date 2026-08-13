@@ -1,12 +1,16 @@
 """
-Preprocessing for higher-resolution inference data.
+Preprocessing for inference-time data (any configured InferenceTarget:
+native full-resolution, 1.5deg, or the coarse store itself).
 
-Separate from `data/preprocessing.py` because the inference-time source is a
-different (higher-resolution) GCS store, may have different raw variables
-available, and needs relative humidity DERIVED rather than read directly
-(the store provides specific humidity as a prognostic variable, not
-relative humidity — unlike the training channels, which use relative
-humidity per FourCastNet's variable set).
+Separate module from `data/preprocessing.py` specifically for the one
+thing that's genuinely different at inference time: relative humidity may
+need to be DERIVED from specific humidity + temperature rather than read
+directly (some stores provide specific humidity as the prognostic
+variable instead). The axis-flip and normalisation steps below are NOT
+reimplemented here — they delegate straight to `data/preprocessing.py`,
+since flipping/normalising an array doesn't actually depend on where that
+array came from; keeping two copies of the same three-line function
+around was pure duplication with nothing inference-specific about it.
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from __future__ import annotations
 from typing import Dict
 
 import numpy as np
+
+from weather_fno.data.preprocessing import flip_axes, normalise
 
 
 def compute_relative_humidity(
@@ -58,20 +64,18 @@ def compute_relative_humidity(
 
 
 def flip_axes_inference(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:
-    """Same idea as data/preprocessing.py's flip_axes, kept separate in case
-    the higher-resolution store needs different corrections."""
-    if flip_lat:
-        arr = arr[..., ::-1, :]
-    if flip_lon:
-        arr = arr[..., :, ::-1]
-    return np.ascontiguousarray(arr)
+    """Thin alias for data/preprocessing.py::flip_axes, kept as a separate
+    name in inference/ call sites for readability (makes it clear at a
+    glance which store's own flip settings are being applied)."""
+    return flip_axes(arr, flip_lat, flip_lon)
 
 
 def normalise_for_inference(arr: np.ndarray, train_stats: Dict[str, np.ndarray]) -> np.ndarray:
     """
     Normalise inference-time data using the SAME stats computed on the
-    training split — never re-fit stats on inference data.
+    training split — never re-fit stats on inference data. Thin wrapper
+    around data/preprocessing.py::normalise (which returns (array, stats)
+    since it can also FIT stats) — this always applies existing stats and
+    returns just the array, which is all every inference call site needs.
     """
-    mean = train_stats["mean"].reshape(1, -1, 1, 1)
-    std = train_stats["std"].reshape(1, -1, 1, 1)
-    return (arr - mean) / std
+    return normalise(arr, stats=train_stats)[0]

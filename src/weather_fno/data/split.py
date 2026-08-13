@@ -12,6 +12,10 @@ from weather_fno.data.gcs_dataset import GCSWeatherDataset
 
 
 def build_train_val_datasets(data_cfg: DataConfig):
+    # Builds train FIRST (fits fresh normalisation stats), then val reusing
+    # those same stats -- val must never fit its own, or it's no longer a
+    # fair held-out measure of how well train-derived normalisation
+    # generalises.
     train_cache = data_cfg.stats_cache_path.replace("normalisation_stats", "train_cache")
     val_cache = data_cfg.stats_cache_path.replace("normalisation_stats", "val_cache")
 

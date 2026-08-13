@@ -1,4 +1,10 @@
-"""Plot training history (loss curves) and forecast verification plots."""
+"""
+Every plot the project produces, one function each:
+  plot_history            train/val loss curves (scripts/train.py, smoke_test.py)
+  plot_rmse_vs_lead_time  model vs persistence RMSE scorecard (scripts/evaluate.py)
+  plot_forecast_maps      ground truth / forecast / error map grid (scripts/evaluate.py)
+  plot_power_spectrum     radial power spectrum comparison (notebooks/plot_forecast_maps.ipynb)
+"""
 
 from __future__ import annotations
 

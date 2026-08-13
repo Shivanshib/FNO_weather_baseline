@@ -161,3 +161,18 @@ inference:
       flip_lat: false
       flip_lon: false
       derive_relative_humidity: false
+
+    # The SAME store/resolution used for training -- an in-distribution
+    # reference point. Since the model has genuinely seen this exact
+    # resolution during training, inference here shows what performance
+    # looks like with NO resolution-generalisation gap at all, for direct
+    # comparison against native_highres/1p5deg above. Same store as
+    # data.gcs_bucket_path, so flip_lat/flip_lon/derive_relative_humidity
+    # match data's settings (confirmed ascending, no flip, RH available
+    # directly) rather than being independently re-verified.
+    - name: "coarse"
+      gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
+      resolution: [64, 32]
+      flip_lat: false
+      flip_lon: false
+      derive_relative_humidity: false

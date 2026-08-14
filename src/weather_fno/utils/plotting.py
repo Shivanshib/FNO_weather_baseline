@@ -1,9 +1,11 @@
 """
 Every plot the project produces, one function each:
-  plot_history            train/val loss curves (scripts/train.py, smoke_test.py)
+  plot_history            train/val loss curves, linear or log scale (scripts/train.py, smoke_test.py)
   plot_rmse_vs_lead_time  model vs persistence RMSE scorecard (scripts/evaluate.py)
   plot_forecast_maps      ground truth / forecast / error map grid (scripts/evaluate.py)
   plot_power_spectrum     radial power spectrum comparison (notebooks/plot_forecast_maps.ipynb)
+Plus recentre_longitude, a shared helper (not a plot itself) used before
+imshow-based map plots -- see its own docstring below.
 """
 
 from __future__ import annotations
@@ -20,15 +22,59 @@ from matplotlib import cm
 from weather_fno.config import ChannelSpec
 
 
-def plot_history(history: dict, out_path: str, run_name: str = "") -> None:
+def recentre_longitude(*fields: np.ndarray, lon: np.ndarray) -> tuple:
+    """
+    Reorder one or more (..., W) fields plus their shared 1D longitude
+    coordinate from the raw store's ascending [0, 360) convention into the
+    standard Atlantic-centred [-180, 180) convention used by recognisable
+    world maps (and by notebooks/data_checks.ipynb's xarray/cartopy plots,
+    which re-project by real coordinate value regardless of convention).
+
+    Every store this project uses provides longitude ascending 0 -> ~360
+    (confirmed directly against GCS -- see flip_lon comments in
+    configs/baseline_fno.yaml), and the data pipeline correctly keeps that
+    raw order throughout training and inference: flip_lon=false everywhere
+    is right, not a bug, and the FNO itself is translation-invariant
+    across this circular axis so training is unaffected either way. But
+    plotting that raw order directly via imshow's extent produces a
+    Greenwich/Africa-centred, Pacific-split map -- technically correct,
+    just not the layout most people recognise (e.g. Australia lands
+    left-of-centre instead of on the right). This function only reorders
+    columns for DISPLAY, never the arrays used for training/inference.
+
+    Args:
+        *fields: one or more arrays sharing `lon` as their last axis.
+        lon: that shared 1D longitude coordinate, ascending 0 -> ~360.
+
+    Returns:
+        (*recentred_fields, recentred_lon) -- same number of fields given,
+        plus the recentred longitude array, in that order.
+    """
+    lon = np.asarray(lon)
+    lon_shifted = ((lon + 180) % 360) - 180
+    order = np.argsort(lon_shifted)
+    recentred_fields = tuple(field[..., order] for field in fields)
+    return (*recentred_fields, lon_shifted[order])
+
+
+def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bool = False) -> None:
+    """
+    Train/val loss vs epoch. With log_scale=True, plots the y-axis on a log
+    scale instead -- useful once loss has dropped enough that the linear
+    version flattens out and hides ongoing improvement.
+    """
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(history["train_loss"], label="train", color=cm.viridis(0.2))
     ax.plot(history["val_loss"], label="val", color=cm.viridis(0.7))
     ax.set_xlabel("epoch")
     ax.set_ylabel("lat-weighted MSE")
-    ax.set_title(f"Training history {run_name}".strip())
+    title = f"Training history {run_name}".strip()
+    if log_scale:
+        ax.set_yscale("log")
+        title += " (log scale)"
+    ax.set_title(title)
     ax.legend()
-    ax.grid(alpha=0.3)
+    ax.grid(alpha=0.3, which="both" if log_scale else "major")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -141,6 +187,10 @@ def plot_forecast_maps(
     forecast = result["forecast"][:, ch_idx]
     ground_truth = result["ground_truth"][:, ch_idx]
     lead_hours = result["lead_hours"]
+
+    # Display-only reorder to the recognisable -180/180 map convention --
+    # see recentre_longitude's docstring; the underlying data is untouched.
+    forecast, ground_truth, lon = recentre_longitude(forecast, ground_truth, lon=lon)
 
     vmin = ground_truth[lead_step_indices].min()
     vmax = ground_truth[lead_step_indices].max()

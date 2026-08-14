@@ -62,6 +62,10 @@ def main():
     history = trainer.fit(train_loader, val_loader)
 
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name)
+    # Same history again, on a log-scaled y-axis -- makes ongoing improvement
+    # visible once loss has dropped enough that the linear plot flattens out.
+    plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss_log.png",
+                 cfg.run_name, log_scale=True)
 
 
 if __name__ == "__main__":

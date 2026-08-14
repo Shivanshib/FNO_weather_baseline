@@ -28,8 +28,8 @@ def compute_relative_humidity(
     pressure_hpa: float,
 ) -> np.ndarray:
     """
-    Derive relative humidity (%) from specific humidity and temperature on
-    a pressure-level surface.
+    Derive relative humidity (fraction, 0-1) from specific humidity and
+    temperature on a pressure-level surface.
 
     pressure_hpa is a constant, not a field — since specific_humidity and
     temperature are already given ON a pressure-level surface (500 or 850
@@ -40,18 +40,28 @@ def compute_relative_humidity(
       1. Saturation vapour pressure from temperature (Tetens' formula).
       2. Actual vapour pressure from specific humidity:
          e = q * p / (0.622 + 0.378 * q)
-      3. Relative humidity = 100 * e / e_sat
+      3. Relative humidity = e / e_sat
+
+    Output is a FRACTION (0-1), matching the convention every source that
+    provides relative_humidity directly (the coarse training store,
+    1p5deg) already uses -- confirmed live against those stores'
+    real values (2026-08-14). This used to multiply by 100 and return a
+    percentage instead, which silently fed native_highres's derived
+    r500/r850 into the model at ~100x the scale the training
+    normalisation stats (fit on the coarse store's 0-1 values) expect --
+    see CODE_REFERENCE.md.
 
     Args:
-        specific_humidity: kg/kg. TODO confirm this against the store —
-            some sources give g/kg instead, which would need /1000 first.
-        temperature: Kelvin. TODO confirm — Tetens' formula below converts
-            to Celsius internally assuming Kelvin input.
+        specific_humidity: kg/kg. CONFIRMED (2026-08-14) directly against
+            the native store's own `units` attribute ("kg kg**-1").
+        temperature: Kelvin. CONFIRMED (2026-08-14) directly against the
+            native store's own `units` attribute ("K") -- Tetens' formula
+            below converts to Celsius internally assuming Kelvin input.
         pressure_hpa: the pressure level these fields sit on, e.g. 500 or
             850 (spec.level from the ChannelSpec calling this).
 
     Returns:
-        Relative humidity as a percentage (0-100), same shape as inputs.
+        Relative humidity as a fraction (0-1), same shape as inputs.
     """
     t_celsius = temperature - 273.15
     e_sat = 6.1078 * np.power(10.0, (7.5 * t_celsius) / (237.3 + t_celsius))
@@ -59,8 +69,8 @@ def compute_relative_humidity(
     q = specific_humidity
     e = q * pressure_hpa / (0.622 + 0.378 * q)
 
-    rh = 100.0 * e / e_sat
-    return np.clip(rh, 0.0, 100.0)
+    rh = e / e_sat
+    return np.clip(rh, 0.0, 1.0)
 
 
 def flip_axes_inference(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:

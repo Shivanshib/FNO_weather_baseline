@@ -142,6 +142,10 @@ def main():
         plot_history(history2, plot_path, cfg.run_name)
         assert Path(plot_path).exists()
 
+        log_plot_path = f"{cfg.training.plot_dir}/{cfg.run_name}_loss_log.png"
+        plot_history(history2, log_plot_path, cfg.run_name, log_scale=True)
+        assert Path(log_plot_path).exists()
+
     with step("inference: derive/read channels + one forward pass per target"):
         model2.eval()
         train_stats = train_ds.stats

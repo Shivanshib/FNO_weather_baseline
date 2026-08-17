@@ -95,7 +95,22 @@ training:
   epochs: 150
   num_workers: 4
   device: "cuda"                 # falls back to cpu automatically if unavailable
-  early_stopping_patience: 15
+
+  # CosineAnnealingLR: smoothly decays the LR from learning_rate above
+  # down to min_lr along a cosine curve over lr_scheduler_t_max epochs
+  # (null = defaults to `epochs` above, so the curve spans the whole
+  # training budget). Scheduled, not reactive to val loss -- unlike
+  # ReduceLROnPlateau it moves every epoch on a fixed schedule regardless
+  # of whether that epoch actually improved.
+  lr_scheduler_t_max: null
+  min_lr: 1.0e-6
+
+  # Plain safety net, independent of the LR schedule now (the cosine
+  # curve itself doesn't react to plateaus) -- stop once val loss hasn't
+  # improved for this many epochs. Kept generous since progress is
+  # expected to be genuinely slower, not just plateaued, once the cosine
+  # curve is deep into its tail and the LR is small.
+  early_stopping_patience: 25
 
   output_dir: "outputs"
   checkpoint_dir: "outputs/checkpoints"

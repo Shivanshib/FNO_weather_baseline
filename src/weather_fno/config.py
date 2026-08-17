@@ -73,6 +73,15 @@ class TrainingConfig:
     checkpoint_dir: str
     plot_dir: str
     log_dir: str
+    # CosineAnnealingLR: smoothly decays the learning rate along a cosine
+    # curve from learning_rate down to min_lr over lr_scheduler_t_max
+    # epochs (None = default to `epochs` above, so the decay spans the
+    # whole training budget). Unlike ReduceLROnPlateau this is scheduled,
+    # not reactive to val loss -- it steps every epoch regardless of
+    # whether val loss actually improved that epoch. Defaulted so older
+    # configs that don't set these still load.
+    lr_scheduler_t_max: Optional[int] = None
+    min_lr: float = 1.0e-6
 
 
 @dataclass

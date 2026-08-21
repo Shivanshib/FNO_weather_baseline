@@ -33,7 +33,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import load_config, resolve_device
+from weather_fno.config import derive_run_paths, load_config, resolve_device
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.inference.predict import load_inference_data
 from weather_fno.inference.preprocessing import normalise_for_inference
@@ -68,15 +68,21 @@ def build_smoketest_config(base_config_path: str):
     cfg.data.train_end = "2000-01-03"
     cfg.data.val_start = "2000-02-01"
     cfg.data.val_end = "2000-02-02"
-    cfg.data.stats_cache_path = str(SMOKETEST_DIR / "stats" / "normalisation_stats.npz")
 
     cfg.training.epochs = 2
-    cfg.training.output_dir = str(SMOKETEST_DIR)
-    cfg.training.checkpoint_dir = str(SMOKETEST_DIR / "checkpoints")
-    cfg.training.plot_dir = str(SMOKETEST_DIR / "plots")
-    cfg.training.log_dir = str(SMOKETEST_DIR / "logs")
     # Deliberately NOT overriding device/num_workers -- those are exactly
     # what we want this smoke test to validate on THIS machine.
+
+    # Re-derive every namespaced path now that run_name is "smoketest" --
+    # gives outputs/smoketest/{checkpoints,plots,logs,stats,predictions},
+    # same as SMOKETEST_DIR always meant, but computed the same way a
+    # real run's paths are rather than hand-rolled here separately (see
+    # config.py::derive_run_paths). This is also what keeps this smoke
+    # test's checkpoints/cache fully isolated from a real run's -- a
+    # different run_name always means a completely different folder, by
+    # construction, not by remembering to redirect every path by hand.
+    derive_run_paths(cfg)
+    assert cfg.training.checkpoint_dir == str(SMOKETEST_DIR / "checkpoints")
 
     return cfg
 

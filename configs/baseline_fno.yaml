@@ -66,9 +66,12 @@ data:
   val_start: "2015-01-01"
   val_end: "2016-12-31"
 
-  # Normalisation stats are computed once from the training split and cached
-  # here so every run (and inference later) uses identical stats.
-  stats_cache_path: "outputs/stats/normalisation_stats.npz"
+  # Normalisation stats are computed once from the training split, cached,
+  # and reused for inference later -- but NOT set here. stats_cache_path
+  # is always auto-derived from run_name (outputs/{run_name}/stats/...),
+  # so every run's stats live alongside that run's own checkpoints/plots,
+  # never shared or overwritten across different runs -- see
+  # config.py::derive_run_paths.
 
 model:
   in_channels: 20
@@ -112,10 +115,13 @@ training:
   # curve is deep into its tail and the LR is small.
   early_stopping_patience: 25
 
+  # The one shared, un-namespaced root across every run -- machine-specific
+  # (e.g. point at a quota-safe disk on a particular GPU node), never
+  # run-specific. checkpoint_dir/plot_dir/log_dir are NOT set here -- each
+  # run's are always auto-derived as {output_dir}/{run_name}/checkpoints
+  # etc, so different experiments (different run_name) can never collide
+  # or overwrite each other's outputs -- see config.py::derive_run_paths.
   output_dir: "outputs"
-  checkpoint_dir: "outputs/checkpoints"
-  plot_dir: "outputs/plots"
-  log_dir: "outputs/logs"
 
 # Note: there's no `metrics:` section -- training/trainer.py always scores
 # with lat_weighted_mse directly (see training/metrics.py), so a config
@@ -126,8 +132,14 @@ training:
 # happens -- not during training.
 
 inference:
-  checkpoint_path: "outputs/checkpoints/best.pt"
-  output_dir: "outputs/predictions"
+  # checkpoint_path/output_dir are NOT set here -- always auto-derived
+  # from run_name (checkpoint_path -> this run's own checkpoints/best.pt,
+  # output_dir -> outputs/{run_name}/predictions), so running evaluate.py/
+  # predict_single_variable.py against this same config always picks up
+  # the checkpoint THIS config just trained, never a stale or unrelated
+  # one -- see config.py::derive_run_paths. Point at a different run's
+  # checkpoint by overriding cfg.inference.checkpoint_path in code
+  # afterward (every notebook's RUN FOLDER cell does exactly this).
 
   # 1-week forecast at the training cadence (6-hourly) = 28 autoregressive
   # steps. Change this if you want a shorter/longer forecast horizon.

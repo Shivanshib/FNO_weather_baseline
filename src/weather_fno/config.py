@@ -40,7 +40,10 @@ class DataConfig:
     train_end: str
     val_start: str
     val_end: str
-    stats_cache_path: str
+    # Always auto-derived from run_name by derive_run_paths() -- see its
+    # docstring. Never set this in a YAML config; load_config() ignores
+    # (and warns about) it if you do.
+    stats_cache_path: str = ""
     # Actual dimension NAMES in the zarr store — used to transpose by name
     # rather than assume positional axis order (see project notes on why).
     # Confirmed against all three WeatherBench2 stores this project uses
@@ -69,10 +72,16 @@ class TrainingConfig:
     num_workers: int
     device: str
     early_stopping_patience: int
+    # The one shared, UN-namespaced root across every run (e.g. "outputs")
+    # -- machine-specific like `device` (e.g. pointed at a quota-safe disk
+    # on a particular GPU node), but never run-specific. checkpoint_dir/
+    # plot_dir/log_dir below are namespaced under this by run_name via
+    # derive_run_paths() -- never set them directly in a YAML config;
+    # load_config() ignores (and warns about) them if you do.
     output_dir: str
-    checkpoint_dir: str
-    plot_dir: str
-    log_dir: str
+    checkpoint_dir: str = ""
+    plot_dir: str = ""
+    log_dir: str = ""
     # CosineAnnealingLR: smoothly decays the learning rate along a cosine
     # curve from learning_rate down to min_lr over lr_scheduler_t_max
     # epochs (None = default to `epochs` above, so the decay spans the
@@ -101,8 +110,6 @@ class InferenceTarget:
 
 @dataclass
 class InferenceConfig:
-    checkpoint_path: str
-    output_dir: str
     targets: List[InferenceTarget]
     forecast_lead_steps: int = 28  # 28 x 6h = 7 days, at the training cadence
     # Shared starting timestep for every target's rollout -- a single field
@@ -114,6 +121,14 @@ class InferenceConfig:
     # training or validation period for a cleaner resolution-generalisation
     # test that isn't also testing generalisation across 40+ years of time.
     start_date: Optional[str] = None
+    # Both always auto-derived from run_name by derive_run_paths() -- see
+    # its docstring. Never set these in a YAML config; load_config()
+    # ignores (and warns about) them if you do. checkpoint_path defaults
+    # to THIS run's own best.pt; point somewhere else by overriding the
+    # attribute in code afterward (every notebook's RUN FOLDER cell does
+    # exactly this for a downloaded run).
+    checkpoint_path: str = ""
+    output_dir: str = ""
 
 
 @dataclass
@@ -133,6 +148,56 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
+def derive_run_paths(cfg: Config) -> None:
+    """
+    Namespace every output path this run writes to under
+    outputs/{run_name}/, and make sure they all exist. Sets, on `cfg` in
+    place:
+        training.checkpoint_dir  -> {output_dir}/{run_name}/checkpoints
+        training.plot_dir        -> {output_dir}/{run_name}/plots
+        training.log_dir         -> {output_dir}/{run_name}/logs
+        data.stats_cache_path    -> {output_dir}/{run_name}/stats/normalisation_stats.npz
+        inference.output_dir     -> {output_dir}/{run_name}/predictions
+        inference.checkpoint_path -> {training.checkpoint_dir}/best.pt
+
+    training.output_dir itself is NOT touched here -- it's the one
+    shared, un-namespaced root across every run (see TrainingConfig's
+    comment), set directly from the YAML.
+
+    Called once by load_config() below. Call it again yourself after
+    changing cfg.run_name post-load (e.g. scripts/sweep.py, before
+    building each sweep entry's dataset/trainer) so every derived path
+    stays consistent with whichever run_name is currently set -- these
+    were previously kept in sync by hand path-by-path (a real bug once:
+    sweep.py used to only re-derive checkpoint_dir, leaving
+    stats_cache_path shared across every sweep entry and silently
+    overwritten by whichever entry trained last).
+    """
+    run_dir = f"{cfg.training.output_dir}/{cfg.run_name}"
+    cfg.training.checkpoint_dir = f"{run_dir}/checkpoints"
+    cfg.training.plot_dir = f"{run_dir}/plots"
+    cfg.training.log_dir = f"{run_dir}/logs"
+    cfg.data.stats_cache_path = f"{run_dir}/stats/normalisation_stats.npz"
+    cfg.inference.output_dir = f"{run_dir}/predictions"
+    cfg.inference.checkpoint_path = f"{cfg.training.checkpoint_dir}/best.pt"
+
+    for d in [cfg.training.output_dir, cfg.training.checkpoint_dir, cfg.training.plot_dir,
+              cfg.training.log_dir, cfg.inference.output_dir,
+              str(Path(cfg.data.stats_cache_path).parent)]:
+        Path(d).mkdir(parents=True, exist_ok=True)
+
+
+def _warn_if_overridden(raw_section: dict, keys: List[str], section_name: str) -> None:
+    """Every key here is now computed by derive_run_paths() -- setting it
+    in the YAML has no effect (it gets overwritten immediately after this
+    runs), so say so rather than silently ignoring it."""
+    for key in keys:
+        if key in raw_section:
+            print(f"[config] {section_name}.{key} is set in the YAML but is always "
+                  f"auto-derived from run_name now (see config.py::derive_run_paths) "
+                  f"-- this value is ignored.")
+
+
 def load_config(path: "str | os.PathLike") -> Config:
     # 1. Parse the YAML into a plain nested dict.
     with open(path, "r") as f:
@@ -148,6 +213,10 @@ def load_config(path: "str | os.PathLike") -> Config:
     inference_raw = dict(raw["inference"])
     inference_raw["targets"] = [InferenceTarget(**t) for t in inference_raw["targets"]]
 
+    _warn_if_overridden(raw["training"], ["checkpoint_dir", "plot_dir", "log_dir"], "training")
+    _warn_if_overridden(data_raw, ["stats_cache_path"], "data")
+    _warn_if_overridden(inference_raw, ["checkpoint_path", "output_dir"], "inference")
+
     # 3. Build every section's dataclass. Any YAML key that doesn't match a
     # dataclass field name raises TypeError here -- that's deliberate,
     # it's how a typo'd or stale config key gets caught immediately
@@ -160,9 +229,8 @@ def load_config(path: "str | os.PathLike") -> Config:
         inference=InferenceConfig(**inference_raw),
     )
 
-    # 4. Make sure output directories exist wherever this runs.
-    for d in [cfg.training.output_dir, cfg.training.checkpoint_dir,
-              cfg.training.plot_dir, cfg.training.log_dir]:
-        Path(d).mkdir(parents=True, exist_ok=True)
+    # 4. Namespace every output path by run_name, and make sure they all
+    # exist wherever this runs.
+    derive_run_paths(cfg)
 
     return cfg

@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import load_config, resolve_device
+from weather_fno.config import derive_run_paths, load_config, resolve_device
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.models.fno_baseline import build_model
 from weather_fno.training.metrics import lat_weights
@@ -59,17 +59,23 @@ def main():
         writer.writerow(["run_name", "overrides", "best_val_loss"])
 
         for i, overrides in enumerate(SWEEP_GRID):
-            # 1. Build this entry's config: apply overrides, and give it
-            # its own run_name AND its own checkpoint_dir. The checkpoint
-            # dir specifically matters -- without a distinct one per
-            # entry, every entry after the first would silently
-            # auto-resume from the PREVIOUS entry's checkpoint (Trainer's
-            # auto-resume just looks for checkpoint_dir/latest.pt, it has
-            # no idea a different architecture was requested) instead of
-            # training fresh.
+            # 1. Build this entry's config: apply overrides, then give it
+            # its own run_name and re-derive EVERY namespaced path from
+            # it (checkpoint_dir, plot_dir, log_dir, stats_cache_path,
+            # inference paths -- see config.py::derive_run_paths). This
+            # matters for more than just checkpoints: without re-deriving
+            # stats_cache_path too, every entry would share the same
+            # cached normalisation stats file and silently overwrite each
+            # other's if a sweep ever varies data config (not just model
+            # config) -- and without a distinct checkpoint_dir per entry,
+            # every entry after the first would silently auto-resume from
+            # the PREVIOUS entry's checkpoint (Trainer's auto-resume just
+            # looks for checkpoint_dir/latest.pt, it has no idea a
+            # different architecture was requested) instead of training
+            # fresh.
             cfg = apply_overrides(base_cfg, overrides)
             cfg.run_name = f"{base_cfg.run_name}_sweep{i}"
-            cfg.training.checkpoint_dir = str(Path(base_cfg.training.checkpoint_dir) / f"sweep_{i}")
+            derive_run_paths(cfg)
             device = resolve_device(cfg.training.device)
 
             # 2. Data pipeline -- same as train.py, rebuilt fresh per

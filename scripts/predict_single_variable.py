@@ -17,6 +17,10 @@ correctly) -- only the SAVED output is restricted to one channel.
 
 Usage:
     python scripts/predict_single_variable.py --config configs/baseline_fno.yaml --channel t2m
+    # For a specific experiment: pass the SAME --experiment file used to
+    # train it, so run_name (and hence checkpoint_path) resolves to that
+    # run, not the base config's own -- see configs/experiments/example.yaml.
+    python scripts/predict_single_variable.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml --channel t2m
 """
 
 from __future__ import annotations
@@ -37,11 +41,12 @@ from weather_fno.inference.preprocessing import normalise_for_inference
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/baseline_fno.yaml")
+    parser.add_argument("--experiment", type=str, default=None)
     parser.add_argument("--channel", type=str, default="t2m",
                          help="short_name of the single channel to forecast, e.g. t2m, z500, mslp")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_path=args.experiment)
 
     # 1. Resolve --channel to a column index into cfg.data.channels, fail
     # fast with the valid options if it's not a real short_name.

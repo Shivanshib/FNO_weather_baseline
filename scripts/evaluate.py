@@ -10,6 +10,11 @@ Saves, per target, into cfg.inference.output_dir:
 
 Usage:
     python scripts/evaluate.py --config configs/baseline_fno.yaml
+    # Evaluating a specific experiment: pass the SAME --experiment file
+    # used to train it, so run_name (and hence checkpoint_path) resolves
+    # to that run, not the base config's own -- see
+    # configs/experiments/example.yaml.
+    python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml
 """
 
 from __future__ import annotations
@@ -36,9 +41,10 @@ MAP_CHANNEL = "t2m"
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/baseline_fno.yaml")
+    parser.add_argument("--experiment", type=str, default=None)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_path=args.experiment)
 
     # 1. Load the exact normalisation stats the training run fit -- never
     # re-fit stats on inference/eval data.

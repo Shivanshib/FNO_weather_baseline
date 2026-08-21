@@ -4,6 +4,9 @@ only configs/baseline_fno.yaml (or an env-specified alternative) changes.
 
 Usage:
     python scripts/train.py --config configs/baseline_fno.yaml
+    # Sweeping a few parameters without touching the base config or the
+    # code -- a small override file, see configs/experiments/example.yaml:
+    python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import load_config, resolve_device
+from weather_fno.config import load_config, resolve_device, save_config_snapshot
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.models.fno_baseline import build_model
 from weather_fno.training.metrics import lat_weights
@@ -24,14 +27,26 @@ from weather_fno.utils.plotting import plot_history
 def main():
     # 1. create argument parser
     parser = argparse.ArgumentParser()
-    
+
     # will pass in the .yaml file that we set up when running the code from the terminal
     parser.add_argument("--config", type=str, required=True)
+    # Optional small override file applied on top of --config -- lets a
+    # whole experiment (architecture, epochs, ...) be defined in one small,
+    # git-tracked file instead of editing the base config or the code, see
+    # configs/experiments/example.yaml.
+    parser.add_argument("--experiment", type=str, default=None)
     args = parser.parse_args()
 
     # stores all hyper parameters into a python object
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_path=args.experiment)
     device = resolve_device(cfg.training.device)
+
+    # Record exactly what this run actually used -- outputs/{run_name}/
+    # config_used.yaml -- so a downloaded run folder is self-documenting
+    # even if the experiment override file (or the base config) has since
+    # changed. Written before training starts, so it survives even an
+    # interrupted run.
+    save_config_snapshot(cfg)
 
 
     # 2. Data Pipeline

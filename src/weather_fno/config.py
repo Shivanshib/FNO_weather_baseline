@@ -8,8 +8,9 @@ need editing when moving between machines.
 
 from __future__ import annotations
 
+import copy
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import List, Optional
 
@@ -198,7 +199,86 @@ def _warn_if_overridden(raw_section: dict, keys: List[str], section_name: str) -
                   f"-- this value is ignored.")
 
 
-def load_config(path: "str | os.PathLike") -> Config:
+def apply_overrides(cfg: Config, overrides: dict) -> Config:
+    """
+    Apply a small dict of overrides on top of an already-loaded Config,
+    returning a NEW Config (the original `cfg` is untouched). `overrides`
+    mirrors the base YAML's own nested shape -- a fragment of what
+    configs/baseline_fno.yaml itself looks like, e.g.:
+        {"run_name": "tfno_v1", "model": {"factorization": "tucker", "rank": 0.5}}
+    `run_name` may be set at the top level (Config's only top-level scalar
+    field); every other key must be nested one level under a section name
+    (data/model/training/inference) matching that section's own field
+    names -- exactly like slicing a fragment out of the base YAML.
+
+    An unknown section or field name raises ValueError immediately, same
+    spirit as load_config's own "a typo'd YAML key is a TypeError, not a
+    silently-ignored no-op" -- setattr on a dataclass instance would
+    otherwise happily create a phantom attribute nothing ever reads,
+    leaving the real field silently at its base-config value.
+
+    Shared by scripts/train.py/evaluate.py/predict_single_variable.py (via
+    load_config's own override_path -- the common case) and
+    scripts/sweep.py (applied directly, once per SWEEP_GRID entry).
+    """
+    cfg = copy.deepcopy(cfg)
+    for key, value in overrides.items():
+        if key == "run_name":
+            cfg.run_name = value
+            continue
+        if not hasattr(cfg, key):
+            raise ValueError(f"unknown config section '{key}' in override -- expected one "
+                              f"of: run_name, data, model, training, inference")
+        section = getattr(cfg, key)
+        valid_fields = {f.name for f in fields(section)}
+        for field_name, field_value in value.items():
+            if field_name not in valid_fields:
+                raise ValueError(f"unknown field '{key}.{field_name}' in override -- "
+                                  f"'{key}' has: {sorted(valid_fields)}")
+            setattr(section, field_name, field_value)
+    return cfg
+
+
+def _validate_n_modes(cfg: Config) -> None:
+    """model.n_modes is capped by the training grid's Nyquist limit
+    (grid_size // 2 per axis) -- exceeding it either errors deep inside
+    neuralop or silently produces a model that doesn't do what the config
+    implies. Worth catching here, at config-load time, now that n_modes is
+    something experiment override files routinely change."""
+    lon_size, lat_size = cfg.data.resolution  # resolution is [lon, lat] = [W, H]
+    lat_modes, lon_modes = cfg.model.n_modes  # n_modes is [lat, lon] = [H, W] -- reversed
+    for axis, actual, grid_size in [("lat", lat_modes, lat_size), ("lon", lon_modes, lon_size)]:
+        ceiling = grid_size // 2
+        if actual > ceiling:
+            raise ValueError(
+                f"model.n_modes {axis}={actual} exceeds the Nyquist ceiling {ceiling} "
+                f"(grid_size // 2) for this {lon_size}x{lat_size} (lon x lat) training "
+                f"grid -- lower it, or increase data.resolution to match."
+            )
+
+
+def save_config_snapshot(cfg: Config) -> None:
+    """
+    Write the fully-resolved config -- every hyperparameter, every derived
+    path, the whole channel/target list -- to {run_dir}/config_used.yaml.
+    Makes a downloaded run folder self-documenting on its own: what
+    architecture, what data range, what hyperparameters actually produced
+    this checkpoint, even if the experiment override file (or the base
+    config itself) that built it has since changed or been deleted.
+
+    Called once by scripts/train.py right after load_config(), not from
+    load_config() itself -- this is a training-time record of what a run
+    actually used, not something every read-only load (a notebook just
+    inspecting an existing run) should silently write into that run's
+    folder.
+    """
+    run_dir = Path(cfg.training.checkpoint_dir).parent
+    snapshot_path = run_dir / "config_used.yaml"
+    with open(snapshot_path, "w") as f:
+        yaml.safe_dump(asdict(cfg), f, sort_keys=False, default_flow_style=False)
+
+
+def load_config(path: "str | os.PathLike", override_path: "str | os.PathLike | None" = None) -> Config:
     # 1. Parse the YAML into a plain nested dict.
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
@@ -229,8 +309,30 @@ def load_config(path: "str | os.PathLike") -> Config:
         inference=InferenceConfig(**inference_raw),
     )
 
-    # 4. Namespace every output path by run_name, and make sure they all
-    # exist wherever this runs.
+    # 3.5. Apply a small experiment override file on top, if given -- see
+    # apply_overrides()'s docstring for the exact merge semantics. Always
+    # requires its own run_name: forgetting to set one is the single
+    # likeliest mistake here, and without this check it would silently
+    # collide with (or auto-resume!) the base config's own run instead of
+    # failing loudly.
+    if override_path is not None:
+        with open(override_path, "r") as f:
+            overrides = yaml.safe_load(f)
+        if "run_name" not in overrides:
+            raise ValueError(
+                f"{override_path} must set its own run_name -- every experiment needs a "
+                f"distinct one so its outputs never collide with (or silently resume) the "
+                f"base config's own run. See configs/experiments/example.yaml."
+            )
+        cfg = apply_overrides(cfg, overrides)
+
+    # 4. Namespace every output path by run_name (possibly just changed by
+    # the override above), and make sure they all exist wherever this
+    # runs.
     derive_run_paths(cfg)
+
+    # 5. Catch a real, likely mistake immediately (at config-load time)
+    # rather than deep inside neuralop or a multi-hour training run.
+    _validate_n_modes(cfg)
 
     return cfg

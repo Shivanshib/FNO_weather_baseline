@@ -13,14 +13,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import derive_run_paths, load_config, resolve_device
+from weather_fno.config import apply_overrides, derive_run_paths, load_config, resolve_device, save_config_snapshot
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.models.fno_baseline import build_model
 from weather_fno.training.metrics import lat_weights
@@ -29,20 +28,17 @@ from weather_fno.training.trainer import Trainer
 # TODO: fill in the hyperparameter combinations you actually want to sweep.
 # These three are just valid placeholders (respecting the 64x32 training
 # grid's Nyquist ceiling of [16, 32] -- see configs/baseline_fno.yaml's
-# model.n_modes comment), not a considered choice of what to sweep.
+# model.n_modes comment), not a considered choice of what to sweep. Same
+# nested shape as configs/experiments/*.yaml -- see
+# config.py::apply_overrides's docstring -- since both go through that
+# same shared function; run_name doesn't need setting per-entry here
+# (unlike a standalone experiment file) since the loop below always gives
+# each entry its own below anyway.
 SWEEP_GRID = [
-    {"model.n_modes": [8, 16], "model.hidden_channels": 32},
-    {"model.n_modes": [12, 24], "model.hidden_channels": 64},
-    {"model.n_modes": [16, 32], "model.hidden_channels": 64},
+    {"model": {"n_modes": [8, 16], "hidden_channels": 32}},
+    {"model": {"n_modes": [12, 24], "hidden_channels": 64}},
+    {"model": {"n_modes": [16, 32], "hidden_channels": 64}},
 ]
-
-
-def apply_overrides(cfg, overrides: dict):
-    cfg = copy.deepcopy(cfg)
-    for dotted_key, value in overrides.items():
-        section, field = dotted_key.split(".")
-        setattr(getattr(cfg, section), field, value)
-    return cfg
 
 
 def main():
@@ -76,6 +72,7 @@ def main():
             cfg = apply_overrides(base_cfg, overrides)
             cfg.run_name = f"{base_cfg.run_name}_sweep{i}"
             derive_run_paths(cfg)
+            save_config_snapshot(cfg)  # outputs/{run_name}/config_used.yaml, same as train.py
             device = resolve_device(cfg.training.device)
 
             # 2. Data pipeline -- same as train.py, rebuilt fresh per

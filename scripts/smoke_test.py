@@ -127,7 +127,7 @@ def main():
 
     with step("train for 2 epochs + checkpoint"):
         weights = lat_weights(train_ds.lat_values)
-        trainer = Trainer(model, optimizer, cfg.training, weights, device)
+        trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
         history = trainer.fit(train_loader, val_loader)
         assert len(history["train_loss"]) == 2
         assert (Path(cfg.training.checkpoint_dir) / "latest.pt").exists()
@@ -138,7 +138,7 @@ def main():
         model2 = build_model(cfg.model)
         optimizer2 = torch.optim.Adam(model2.parameters(), lr=cfg.training.learning_rate,
                                        weight_decay=cfg.training.weight_decay)
-        trainer2 = Trainer(model2, optimizer2, cfg.training, weights, device)
+        trainer2 = Trainer(model2, optimizer2, cfg.training, weights, device, target_mode=cfg.model.target_mode)
         assert trainer2.start_epoch == 2, f"expected to resume at epoch 2, got {trainer2.start_epoch}"
         history2 = trainer2.fit(train_loader, val_loader)
         assert len(history2["train_loss"]) == 4

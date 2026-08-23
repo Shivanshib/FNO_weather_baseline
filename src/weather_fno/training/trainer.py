@@ -5,7 +5,9 @@ stopping, history logging for plotting.
 Main process, per call to fit():
   for each epoch:
     1. one gradient-descent pass over the training set (_run_epoch,
-       train=True) -- lat-weighted MSE, backprop, optimizer step per batch
+       train=True) -- lat-weighted MSE against either the full next state
+       or (target_mode="residual") the delta y - x, backprop, optimizer
+       step per batch
     2. one no-grad pass over the validation set (_run_epoch, train=False)
        -- same loss, no weight updates
     3. step the CosineAnnealingLR scheduler -- smoothly decays the learning
@@ -39,12 +41,18 @@ from weather_fno.utils.checkpoint import load_checkpoint, save_checkpoint
 
 
 class Trainer:
-    def __init__(self, model, optimizer, cfg, lat_weight_tensor, device):
+    def __init__(self, model, optimizer, cfg, lat_weight_tensor, device, target_mode: str = "direct"):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.cfg = cfg
         self.lat_weight_tensor = lat_weight_tensor
         self.device = device
+        # "direct": loss target is y. "residual": loss target is (y - x),
+        # so the model is trained to predict the delta instead of the full
+        # next state -- see ModelConfig.target_mode. Passed in explicitly
+        # (rather than read off self.cfg) since self.cfg is TrainingConfig,
+        # not the full Config -- callers pass cfg.model.target_mode.
+        self.target_mode = target_mode
 
         # T_max defaults to the full epoch budget, so the cosine curve
         # reaches min_lr right at the end of training (if early stopping
@@ -64,6 +72,21 @@ class Trainer:
         # with no flag required — makes "rerun the same command" safe.
         ckpt = load_checkpoint(cfg.checkpoint_dir, "latest.pt", self.model, self.optimizer, device)
         if ckpt is not None:
+            # The checkpoint's weights were trained under WHATEVER
+            # target_mode produced them -- resuming under a different one
+            # would keep training against a different loss target than the
+            # one those weights already encode, silently corrupting the
+            # run rather than erroring. ckpt.get(..., "direct") covers
+            # checkpoints saved before target_mode existed at all.
+            ckpt_target_mode = ckpt.get("target_mode", "direct")
+            if ckpt_target_mode != self.target_mode:
+                raise ValueError(
+                    f"Checkpoint at '{cfg.checkpoint_dir}/latest.pt' was trained with "
+                    f"target_mode='{ckpt_target_mode}', but this run is configured with "
+                    f"target_mode='{self.target_mode}'. Resuming under a different "
+                    f"target_mode would train against the wrong loss target -- use a "
+                    f"distinct run_name for a fresh run instead."
+                )
             self.start_epoch = ckpt["epoch"] + 1
             self.best_val_loss = ckpt["best_val_loss"]
             self.history = ckpt["history"]
@@ -116,7 +139,10 @@ class Trainer:
 
             with torch.set_grad_enabled(train):
                 pred = self.model(x)
-                loss = lat_weighted_mse(pred, y, self.lat_weight_tensor)
+                # residual mode: the model predicts du = y - x, so the
+                # loss target is the delta, not the full next state.
+                target = (y - x) if self.target_mode == "residual" else y
+                loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
 
                 if train:
                     self.optimizer.zero_grad()
@@ -159,6 +185,7 @@ class Trainer:
                 "best_val_loss": self.best_val_loss,
                 "history": self.history,
                 "config": self.cfg,
+                "target_mode": self.target_mode,
             }
             save_checkpoint(state, self.cfg.checkpoint_dir, "latest.pt")
 

@@ -62,6 +62,18 @@ class ModelConfig:
     n_layers: int
     factorization: Optional[str] = None
     rank: Optional[float] = None
+    # "direct": the model predicts u(t+dt) outright (the original/default
+    # behaviour). "residual": the model predicts the DELTA
+    # du = u(t+dt) - u(t) instead -- the loss compares the model's raw
+    # output to the true delta (Trainer._run_epoch), and every
+    # autoregressive step reconstructs the full state as x + model(x)
+    # before feeding it back in (inference/predict.py::rollout) or scoring
+    # it. This is a property of what the CHECKPOINT'S WEIGHTS represent,
+    # not just a loss-function choice -- load_trained_model() refuses to
+    # load a checkpoint whose recorded target_mode doesn't match this
+    # config's, since the reconstruction math differs and a silent
+    # mismatch would produce a plausible-looking but meaningless forecast.
+    target_mode: str = "direct"
 
 
 @dataclass
@@ -257,6 +269,19 @@ def _validate_n_modes(cfg: Config) -> None:
             )
 
 
+def _validate_target_mode(cfg: Config) -> None:
+    """model.target_mode selects a genuinely different loss target and
+    inference reconstruction (see ModelConfig.target_mode's comment) --
+    catch a typo'd value here, at config-load time, rather than having it
+    silently fall through as neither "direct" nor "residual" deep inside
+    Trainer/rollout."""
+    valid = ("direct", "residual")
+    if cfg.model.target_mode not in valid:
+        raise ValueError(
+            f"model.target_mode '{cfg.model.target_mode}' is not one of {valid}."
+        )
+
+
 def save_config_snapshot(cfg: Config) -> None:
     """
     Write the fully-resolved config -- every hyperparameter, every derived
@@ -334,5 +359,6 @@ def load_config(path: "str | os.PathLike", override_path: "str | os.PathLike | N
     # 5. Catch a real, likely mistake immediately (at config-load time)
     # rather than deep inside neuralop or a multi-hour training run.
     _validate_n_modes(cfg)
+    _validate_target_mode(cfg)
 
     return cfg

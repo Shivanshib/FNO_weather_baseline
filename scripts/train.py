@@ -73,7 +73,7 @@ def main():
     weights = lat_weights(train_ds.lat_values)
 
     # 5. Set up training loop and visualisation
-    trainer = Trainer(model, optimizer, cfg.training, weights, device)
+    trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
     history = trainer.fit(train_loader, val_loader)
 
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name)

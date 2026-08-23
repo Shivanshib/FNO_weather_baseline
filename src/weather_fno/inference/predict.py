@@ -109,7 +109,7 @@ def load_inference_data(
     return arr
 
 
-def rollout(model, x0: torch.Tensor, n_steps: int, device) -> np.ndarray:
+def rollout(model, x0: torch.Tensor, n_steps: int, device, target_mode: str = "direct") -> np.ndarray:
     """
     Autoregressive rollout: feed the model's own output back in as the next
     input, n_steps times. Shared by every caller that needs a multi-step
@@ -120,18 +120,28 @@ def rollout(model, x0: torch.Tensor, n_steps: int, device) -> np.ndarray:
     Args:
         x0: normalised initial condition, shape (1, C, H, W).
         n_steps: number of 6-hour steps to roll forward.
+        target_mode: "direct" (default) — the model's raw output IS the
+            next state, used as-is. "residual" — the model's raw output is
+            a DELTA, added onto the current state to reconstruct the next
+            one (x + model(x)) before it's fed back in or returned. Pass
+            cfg.model.target_mode; must match whatever the loaded
+            checkpoint was trained with (load_trained_model enforces this).
 
     Returns:
-        Normalised predictions, shape (n_steps, C, H, W), still on CPU as
-        a numpy array — NOT denormalised, that's the caller's
-        responsibility (callers denormalise at slightly different points
-        depending on what else they need to do with the array first).
+        Normalised, FULLY RECONSTRUCTED next-state predictions, shape
+        (n_steps, C, H, W), still on CPU as a numpy array — regardless of
+        target_mode, every element here is a full state, never a raw
+        delta, so every caller (denormalise, scoring, plotting) needs no
+        target_mode awareness of its own. NOT denormalised, that's the
+        caller's responsibility (callers denormalise at slightly different
+        points depending on what else they need to do with the array first).
     """
     x = x0.to(device)
     predictions_norm = []
     with torch.no_grad():
         for _ in range(n_steps):
-            x = model(x)
+            out = model(x)
+            x = x + out if target_mode == "residual" else out
             predictions_norm.append(x.cpu().numpy())
     return np.concatenate(predictions_norm, axis=0)
 
@@ -161,5 +171,21 @@ def load_trained_model(cfg: Config, device):
             f"(resolved relative to cwd={os.getcwd()}). The model would otherwise "
             f"silently run with its random initial weights instead of the trained "
             f"ones -- check the path is correct relative to where this is being run from."
+        )
+    # The checkpoint's weights were trained under WHATEVER target_mode
+    # produced them (see ModelConfig.target_mode) -- rollout()'s
+    # reconstruction math (x + model(x) vs model(x) alone) depends on
+    # getting this right, and a mismatch would silently produce a
+    # plausible-LOOKING but meaningless forecast rather than an error, the
+    # same failure mode the missing-checkpoint check above guards against.
+    # ckpt.get(..., "direct") covers checkpoints saved before target_mode
+    # existed at all.
+    ckpt_target_mode = ckpt.get("target_mode", "direct")
+    if ckpt_target_mode != cfg.model.target_mode:
+        raise ValueError(
+            f"Checkpoint at '{cfg.inference.checkpoint_path}' was trained with "
+            f"target_mode='{ckpt_target_mode}', but this config is set to "
+            f"target_mode='{cfg.model.target_mode}'. Use the matching --config/"
+            f"--experiment pair for this checkpoint's target_mode."
         )
     return model.eval().to(device)

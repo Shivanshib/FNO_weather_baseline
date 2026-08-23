@@ -90,6 +90,11 @@ model:
   # in (0, 1] to compress the spectral weights via low-rank tensor factors.
   factorization: null
   rank: null
+  # "direct" (default, baseline): the model predicts the full next state
+  # u(t+6h) outright. "residual": the model predicts the delta
+  # du = u(t+6h) - u(t) instead -- switch via configs/experiments/, e.g.
+  # configs/experiments/residual_target.yaml, not by editing this file.
+  target_mode: "direct"
 
 training:
   batch_size: 32

@@ -82,7 +82,7 @@ def main():
 
         arr_norm = normalise_for_inference(arr, train_stats)
         x0 = torch.from_numpy(arr_norm[0:1]).float()
-        predictions_norm = rollout(model, x0, n_steps, device)
+        predictions_norm = rollout(model, x0, n_steps, device, target_mode=cfg.model.target_mode)
         # Denormalise BEFORE slicing to one channel -- denormalise needs
         # the full per-channel mean/std broadcast, not a single-channel one.
         forecast_full = denormalise(predictions_norm, train_stats)

@@ -95,7 +95,7 @@ def main():
             # 4. Train this entry to completion (or early stopping), then
             # log its result immediately -- flushed after every row so
             # partial sweep progress survives a crash partway through.
-            trainer = Trainer(model, optimizer, cfg.training, weights, device)
+            trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
             trainer.fit(train_loader, val_loader)
 
             writer.writerow([cfg.run_name, overrides, trainer.best_val_loss])

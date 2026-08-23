@@ -88,7 +88,7 @@ def evaluate_target(
     # 2. Autoregressive rollout from that same initial condition.
     arr_norm = normalise_for_inference(arr, train_stats)
     x0 = torch.from_numpy(arr_norm[0:1]).float()
-    predictions_norm = rollout(model, x0, n_steps, device)
+    predictions_norm = rollout(model, x0, n_steps, device, target_mode=cfg.model.target_mode)
     forecast = denormalise(predictions_norm, train_stats)
 
     # 3. Score model AND persistence against ground truth, per lead time.

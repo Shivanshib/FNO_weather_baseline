@@ -1,19 +1,14 @@
 """
-Run the full 7-day (28-step) autoregressive forecast for a SINGLE variable,
-on every configured inference target, and save the per-lead-time forecast
-AND ground truth maps -- not just aggregate metrics -- so they can be
-plotted flexibly afterward (see notebooks/plot_forecast_maps.ipynb) without
-needing GPU or network access again.
+Runs the full autoregressive forecast for a SINGLE variable, on every
+configured inference target, and saves the per-lead-time forecast AND
+ground truth maps (not just aggregate metrics) so they can be plotted
+later (notebooks/plot_forecast_maps.ipynb) without GPU/network access.
 
-Deliberately restricted to one variable to keep saved file sizes small and
-predictable: the full 20-channel array at native 1440x721 resolution would
-be several GB (see CODE_REFERENCE.md's disk-quota history) -- one
-channel's worth of maps across all 28 lead times is a much safer ~100-200MB
-even at native resolution, and gets further reduced via compression.
-
-The model still runs on all 20 channels internally at every step (the
-autoregressive rollout needs the full multivariate state to step forward
-correctly) -- only the SAVED output is restricted to one channel.
+Restricted to one variable to keep file sizes small: the full 20-channel
+array at native resolution would be several GB, while one channel across
+every lead time is closer to ~100-200MB. The model still runs on all 20
+channels internally at every step (rollout needs the full state to step
+forward correctly) -- only the SAVED output is one channel.
 
 Usage:
     python scripts/predict_single_variable.py --config configs/baseline_fno.yaml --channel t2m

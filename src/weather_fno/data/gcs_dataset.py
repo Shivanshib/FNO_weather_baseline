@@ -1,16 +1,12 @@
 """
-Streaming Dataset for coarse-resolution ERA5-style data stored as zarr on GCS.
+PyTorch Dataset for the coarse (64x32, 20-channel) ERA5-style training
+data, streamed from a GCS zarr store.
 
-The 64x32, 20-channel training data is small enough to fit comfortably in
-memory, so this class opens the store lazily via xarray + gcsfs and applies
-preprocessing ONCE per process. Only the small normalisation stats
-(mean/std/lat_values, a few KB) are ever persisted to disk -- NOT the full
-preprocessed array, which can be several GB for the full training date
-range and risks blowing a disk quota on space-constrained filesystems
-(university HPC home directories are commonly quota-limited). Every
-dataset build therefore always re-fetches from GCS -- a bounded, one-time
-network cost per process start (a few minutes for the full training
-range) rather than an unbounded disk-space cost.
+The whole split fits in memory, so __init__ fetches and normalises it all
+up front. Only the small normalisation stats (mean/std/lat_values) ever
+get cached to disk -- not the full array, which can be several GB and
+would risk filling up a shared/quota-limited disk. So every run re-fetches
+from GCS on startup instead (a few minutes, but bounded).
 """
 
 from __future__ import annotations
@@ -32,21 +28,19 @@ from weather_fno.data.preprocessing import flip_axes, normalise
 def _select_channels(
     ds: xr.Dataset, channels: List[ChannelSpec], lat_dim: str, lon_dim: str
 ) -> List[np.ndarray]:
-    """Pull every configured channel out of the store, in configured order.
+    """
+    Pull every configured channel out of the store, in configured order.
 
-    Several channels share the same underlying variable at different
-    pressure levels (e.g. z1000/z850/z500/z50 are all `geopotential`).
-    Zarr reads are chunk-granular — if a variable's levels sit in the same
-    chunk (common; there are usually only a handful of pressure levels),
-    selecting each level separately re-downloads and re-decompresses that
-    same chunk once per level requested. Grouping by variable NAME and
-    pulling every needed level in a single `.sel(level=[...])` call fetches
-    each distinct variable exactly once, regardless of how many channels
-    it feeds.
+    Several channels share the same variable at different pressure levels
+    (e.g. z1000/z850/z500 are all `geopotential`). Levels of the same
+    variable usually live in the same zarr chunk, so we group by variable
+    name and fetch all needed levels in one `.sel(level=[...])` call --
+    fetching each level separately would re-download the same chunk once
+    per level.
 
-    Transposes to a guaranteed (time, [level,] lat_dim, lon_dim) axis order
-    BY NAME rather than assuming positional order — correct regardless of
-    how the store physically lays the array out.
+    Transposes to (time, [level,] lat, lon) by dimension NAME, not
+    position, so this is correct regardless of how the store lays out its
+    axes internally.
     """
     by_name: Dict[str, List[ChannelSpec]] = {}
     for spec in channels:
@@ -75,6 +69,9 @@ def _select_channels(
 
 
 class GCSWeatherDataset(Dataset):
+    """One (train or val) split of the training data. __getitem__ returns
+    (x, y) pairs of adjacent 6-hourly timesteps for next-step prediction."""
+
     def __init__(
         self,
         gcs_bucket_path: str,
@@ -90,62 +87,53 @@ class GCSWeatherDataset(Dataset):
     ):
         """
         Args:
-            gcs_bucket_path: e.g. cfg.data.gcs_bucket_path, the coarse
-                training store's zarr path.
-            channels: ordered list of variable names to stack into channels.
+            gcs_bucket_path: zarr path of the training store.
+            channels: ordered list of variables to stack into channels.
             start, end: inclusive date strings bounding this split.
-            flip_lat, flip_lon: orientation corrections (e.g. store runs
-                north-to-south but the model expects south-to-north) — this
-                is DIFFERENT from axis order, which is now always handled
-                correctly via the named transpose above.
-            lat_dim, lon_dim: actual dimension names in the store.
-            stats: normalisation stats dict {"mean": ..., "std": ...}. Pass
-                the stats computed on the TRAIN split when building the val
-                dataset, so val is normalised identically to train.
-            cache_path: optional path to persist the fitted normalisation
-                stats (mean/std/lat_values only — NOT the full data array,
-                see module docstring) so a later, separate process (e.g.
-                scripts/evaluate.py, scripts/predict_single_variable.py)
-                can reuse the exact stats a training run fit without
-                needing that run's data still in memory. Only written when
-                stats=None (i.e. this call is FITTING fresh stats — the
-                train split), never when reusing stats passed in from
-                elsewhere (val/inference).
+            flip_lat, flip_lon: orientation fixes for this store (e.g. it
+                might store latitude north-to-south instead of the other
+                way round) -- separate from axis ORDER, which is always
+                handled correctly above via the named transpose.
+            lat_dim, lon_dim: the store's actual dimension names.
+            stats: {"mean": ..., "std": ...} to normalise with. Pass None
+                to fit fresh stats from this split's own data (the TRAIN
+                split only) -- pass the train split's stats back in here
+                when building the val split, so both are normalised the
+                same way.
+            cache_path: where to save the fitted stats, so a later process
+                (evaluate.py, predict_single_variable.py) can reuse them
+                without needing this run's data in memory. Only saved when
+                stats=None -- i.e. only when this call is the one actually
+                fitting fresh stats.
         """
         self.channels = channels
         self.flip_lat = flip_lat
         self.flip_lon = flip_lon
 
-        # 1. Open the store (lazy -- no data downloaded yet) and narrow to
+        # 1. Open the store (lazy, nothing downloaded yet) and narrow to
         # this split's date range.
         ds = open_dataset(gcs_bucket_path)
         ds = ds.sel(time=slice(start, end))
 
-        # 2. Real latitude values from the store — flipped to match the
-        # data array below if flip_lat is set, so weights[i] always
-        # corresponds to row i of self.data regardless of orientation.
+        # 2. Real latitude values, flipped the same way as the data below
+        # so weights[i] always lines up with row i of self.data.
         lat_values = ds[lat_dim].values
         if flip_lat:
             lat_values = lat_values[::-1]
         self.lat_values = lat_values
 
-        # 3. Fetch every configured channel (variable naming confirmed
-        # against the real store via scripts/inspect_store.py and a
-        # successful real training run -- not a guess).
+        # 3. Fetch every configured channel and stack into (T, C, H, W).
         print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
         t0 = time.time()
-        arr = np.stack(
-            _select_channels(ds, channels, lat_dim, lon_dim), axis=1
-        )  # (T, C, H, W) — H=lat_dim, W=lon_dim, guaranteed by the transpose above
+        arr = np.stack(_select_channels(ds, channels, lat_dim, lon_dim), axis=1)
         print(f"Done fetching in {time.time() - t0:.1f}s")
 
-        # 4. Orientation correction, then per-channel standardisation.
+        # 4. Orientation fix, then per-channel standardisation.
         arr = flip_axes(arr, flip_lat=flip_lat, flip_lon=flip_lon)
         arr, self.stats = normalise(arr, stats=stats)
 
-        # 5. Persist ONLY the small stats (see module docstring) so a
-        # separate later process can normalise identically without
-        # needing this run's data.
+        # 5. Cache the (tiny) stats only -- see class docstring for why we
+        # never cache the full array.
         if cache_path and stats is None:
             Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
             np.savez(cache_path, mean=self.stats["mean"], std=self.stats["std"],
@@ -154,17 +142,14 @@ class GCSWeatherDataset(Dataset):
         self.data = torch.from_numpy(arr).float()
 
     def __len__(self) -> int:
-        # One less than the timestep count: __getitem__ pairs index i with
-        # i+1 (single-step next-timestep prediction -- see __getitem__).
+        # One less than the timestep count -- __getitem__ pairs index i
+        # with i+1.
         return self.data.shape[0] - 1
 
     def __getitem__(self, idx: int):
-        # x = current timestep, y = the very next stored timestep. Every
-        # configured store is uniformly 6-hourly (confirmed against real
-        # data, no gaps within the configured date ranges), so this pairing
-        # IS exactly "predict 6 hours ahead" -- there's no separate horizon
-        # setting anywhere else; it's implicitly whatever gap exists
-        # between adjacent rows of self.data.
+        # x = current timestep, y = next timestep. Every store here is
+        # uniformly 6-hourly, so this pairing is exactly "predict 6h
+        # ahead" -- there's no separate horizon setting anywhere else.
         x = self.data[idx]
         y = self.data[idx + 1]
         return x, y

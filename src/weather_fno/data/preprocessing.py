@@ -1,8 +1,7 @@
 """
-Preprocessing: normalisation + axis corrections.
-
-Kept separate from the Dataset class so both can be unit-tested against a
-couple of known samples independently of any GCS access.
+Normalisation and axis-flip helpers, used both for training data and
+inference data. Kept separate from the Dataset classes so they can be
+tested on their own, without needing GCS access.
 """
 
 from __future__ import annotations
@@ -14,16 +13,11 @@ import numpy as np
 
 def flip_axes(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:
     """
-    Flip spatial axes of an array shaped (T, C, H, W) where H is the
-    latitude axis and W is the longitude axis.
-
-    flip_lat/flip_lon are per-source orientation corrections, confirmed
-    directly against live GCS coordinate metadata (not guessed): the
-    coarse/1.5deg conservatively-regridded stores have latitude stored
-    ascending and need no flip; the native full-resolution store uses the
-    classic ECMWF descending convention and does need one. See each
-    source's flip_lat/flip_lon comments in configs/baseline_fno.yaml for
-    the confirmed value per store.
+    Flip spatial axes of an array shaped (T, C, H, W), H=latitude,
+    W=longitude. Different stores order their lat/lon axes differently
+    (e.g. north-to-south vs south-to-north) — flip_lat/flip_lon correct
+    for that per store. See configs/baseline_fno.yaml for which stores
+    need which flip.
     """
     if flip_lat:
         arr = arr[..., ::-1, :]

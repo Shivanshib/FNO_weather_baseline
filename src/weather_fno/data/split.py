@@ -1,8 +1,7 @@
 """
-Time-based train/val split helpers.
-
-Weather data is a time series — a random split leaks information between
-adjacent, highly correlated timesteps. Always split by date instead.
+Builds the train and validation datasets, split by date (not randomly --
+weather timesteps are highly correlated, so a random split would leak
+information between train and val).
 """
 
 from __future__ import annotations
@@ -12,12 +11,10 @@ from weather_fno.data.gcs_dataset import GCSWeatherDataset
 
 
 def build_train_val_datasets(data_cfg: DataConfig):
-    # Builds train FIRST (fits fresh normalisation stats), then val reusing
-    # those same stats -- val must never fit its own, or it's no longer a
-    # fair held-out measure of how well train-derived normalisation
-    # generalises.
+    """Build train first (fits fresh normalisation stats from its own
+    data), then val reusing those same stats -- val must never fit its
+    own stats, or it stops being a fair measure of generalisation."""
     train_cache = data_cfg.stats_cache_path.replace("normalisation_stats", "train_cache")
-    val_cache = data_cfg.stats_cache_path.replace("normalisation_stats", "val_cache")
 
     train_ds = GCSWeatherDataset(
         gcs_bucket_path=data_cfg.gcs_bucket_path,
@@ -28,7 +25,7 @@ def build_train_val_datasets(data_cfg: DataConfig):
         flip_lon=data_cfg.flip_lon,
         lat_dim=data_cfg.lat_dim,
         lon_dim=data_cfg.lon_dim,
-        stats=None,  # computed fresh from the training split
+        stats=None,  # None = fit fresh stats from this (training) data
         cache_path=train_cache,
     )
 
@@ -41,8 +38,7 @@ def build_train_val_datasets(data_cfg: DataConfig):
         flip_lon=data_cfg.flip_lon,
         lat_dim=data_cfg.lat_dim,
         lon_dim=data_cfg.lon_dim,
-        stats=train_ds.stats,  # reuse TRAIN stats — never fit stats on val
-        cache_path=val_cache,
+        stats=train_ds.stats,  # reuse TRAIN stats -- never fit stats on val
     )
 
     return train_ds, val_ds

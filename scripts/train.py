@@ -25,60 +25,46 @@ from weather_fno.utils.plotting import plot_history
 
 
 def main():
-    # 1. create argument parser
+    # 1. Parse CLI args and load config.
     parser = argparse.ArgumentParser()
-
-    # will pass in the .yaml file that we set up when running the code from the terminal
     parser.add_argument("--config", type=str, required=True)
-    # Optional small override file applied on top of --config -- lets a
-    # whole experiment (architecture, epochs, ...) be defined in one small,
-    # git-tracked file instead of editing the base config or the code, see
-    # configs/experiments/example.yaml.
+    # Small override file layered on top of --config, so a whole
+    # experiment (architecture, epochs, ...) lives in one small file
+    # instead of editing the base config -- see configs/experiments/example.yaml.
     parser.add_argument("--experiment", type=str, default=None)
     args = parser.parse_args()
 
-    # stores all hyper parameters into a python object
     cfg = load_config(args.config, override_path=args.experiment)
     device = resolve_device(cfg.training.device)
 
-    # Record exactly what this run actually used -- outputs/{run_name}/
-    # config_used.yaml -- so a downloaded run folder is self-documenting
-    # even if the experiment override file (or the base config) has since
-    # changed. Written before training starts, so it survives even an
-    # interrupted run.
+    # Record exactly what this run used, before training starts, so a
+    # downloaded run folder stays self-documenting even if the experiment
+    # file or base config later changes.
     save_config_snapshot(cfg)
 
-
-    # 2. Data Pipeline
-    # initialise training and validation datasets
+    # 2. Data pipeline.
     train_ds, val_ds = build_train_val_datasets(cfg.data)
-
-    # wraps datasets into pytorch dataloaders
     train_loader = DataLoader(train_ds, batch_size=cfg.training.batch_size,
                                shuffle=True, num_workers=cfg.training.num_workers)
     val_loader = DataLoader(val_ds, batch_size=cfg.training.batch_size,
                              shuffle=False, num_workers=cfg.training.num_workers)
 
-    # 3. Model and Optimisation Init
-    # builds fno model
+    # 3. Model and optimizer.
     model = build_model(cfg.model)
-    # builds optimiser
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training.learning_rate,
                                   weight_decay=cfg.training.weight_decay)
 
-    # 4. Set up physics informed Adjustments
-    # Real latitude values pulled from the store itself (see
-    # GCSWeatherDataset.lat_values) — not a guessed/linspace approximation,
-    # since most equiangular grids don't actually space evenly pole-to-pole.
+    # 4. Latitude weights for the loss -- real values from the store, not
+    # a linspace guess, since equiangular grids don't space evenly pole-to-pole.
     weights = lat_weights(train_ds.lat_values)
 
-    # 5. Set up training loop and visualisation
+    # 5. Train, then plot the loss curve (linear and log scale -- log
+    # scale stays readable once loss has dropped enough to flatten the
+    # linear plot).
     trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
     history = trainer.fit(train_loader, val_loader)
 
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name)
-    # Same history again, on a log-scaled y-axis -- makes ongoing improvement
-    # visible once loss has dropped enough that the linear plot flattens out.
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss_log.png",
                  cfg.run_name, log_scale=True)
 

@@ -1,11 +1,7 @@
 """
-Weather-forecasting metrics.
-
-Only latitude-weighted MSE is implemented as a working placeholder for now —
-fill in the rest (RMSE, ACC, per-variable breakdowns, etc.) once you've
-confirmed exactly which ones you need. All of WeatherBench2's deterministic
-metrics use the same area-weighting idea, so lat_weights() below is the
-piece the rest will build on.
+Latitude-weighted error metrics used for both the training loss and
+evaluation. Grid cells shrink towards the poles on an equiangular lat/lon
+grid, so errors there need down-weighting or the poles dominate the score.
 """
 
 from __future__ import annotations
@@ -16,18 +12,15 @@ import torch
 
 def lat_weights(lat_degrees: np.ndarray) -> torch.Tensor:
     """
-    Area weights for an equiangular lat/lon grid, following the WeatherBench2
-    / FourCastNet convention: weight proportional to cos(latitude),
-    normalised to mean 1 over the latitude axis. Needed because grid cells
-    shrink towards the poles on an equiangular grid — without this, polar
-    regions are over-weighted relative to their true area.
+    Area weight per latitude row: proportional to cos(latitude), scaled to
+    average 1. Standard WeatherBench2/FourCastNet convention.
 
     Args:
-        lat_degrees: 1D array of latitude values in degrees, shape (H,).
+        lat_degrees: 1D latitude values in degrees, shape (H,).
 
     Returns:
-        Tensor of shape (H,) — multiply elementwise (broadcast over the
-        latitude axis) into any per-gridpoint error before averaging.
+        Tensor (H,) -- broadcast-multiply into a per-gridpoint error before
+        averaging.
     """
     lat_rad = np.deg2rad(lat_degrees)
     w = np.cos(lat_rad)
@@ -59,12 +52,10 @@ def lat_weighted_rmse(pred: torch.Tensor, target: torch.Tensor, weights: torch.T
 
 def lat_weighted_rmse_per_channel(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     """
-    Same as lat_weighted_rmse but keeps the channel dimension instead of
-    averaging over it — one RMSE value per channel, in that channel's own
-    physical units. Different channels have very different natural
-    magnitudes (e.g. geopotential in the thousands vs temperature in the
-    hundreds), so per-channel is what you actually want for verification
-    plots/scorecards rather than one number averaged across all of them.
+    Same as lat_weighted_rmse, but one value per channel instead of
+    averaged over all of them -- needed since channels have very different
+    natural scales (e.g. geopotential vs temperature), so a single
+    combined number isn't very meaningful for scorecards/plots.
 
     Args:
         pred, target: shape (B, C, H, W)
@@ -78,5 +69,4 @@ def lat_weighted_rmse_per_channel(pred: torch.Tensor, target: torch.Tensor, weig
     return torch.sqrt(mse_per_channel)
 
 
-# TODO: fill in once channels/levels are finalised —
-#   - lat_weighted_acc   (anomaly correlation coefficient, needs a climatology)
+# TODO: anomaly correlation coefficient (ACC) -- needs a climatology, not built yet.

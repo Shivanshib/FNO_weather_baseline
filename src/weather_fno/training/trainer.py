@@ -1,31 +1,19 @@
 """
 Training loop: train/val epochs, LR scheduling, checkpointing, early
-stopping, history logging for plotting.
+stopping.
 
-Main process, per call to fit():
-  for each epoch:
-    1. one gradient-descent pass over the training set (_run_epoch,
-       train=True) -- lat-weighted MSE against either the full next state
-       or (target_mode="residual") the delta y - x, backprop, optimizer
-       step per batch
-    2. one no-grad pass over the validation set (_run_epoch, train=False)
-       -- same loss, no weight updates
-    3. step the CosineAnnealingLR scheduler -- smoothly decays the learning
-       rate along a cosine curve from learning_rate down to min_lr over
-       lr_scheduler_t_max epochs. Unlike ReduceLROnPlateau this is
-       SCHEDULED, not reactive: it steps every epoch on a fixed curve
-       regardless of whether val loss actually improved that epoch.
-    4. save latest.pt unconditionally (atomic write, see utils/checkpoint)
-    5. if val loss improved, also save best.pt and reset the early-stopping
-       counter; otherwise increment it and stop once it hits
-       early_stopping_patience -- a plain safety net independent of the LR
-       schedule, since the cosine curve itself doesn't respond to
-       plateaus the way ReduceLROnPlateau did
-Auto-resume (in __init__, before any of the above starts) means "rerun the
-identical command" is always safe -- it just continues from latest.pt if
-one already exists, no flag needed. The scheduler resumes to the correct
-point on its curve too, replayed from the checkpointed epoch count rather
-than restored wholesale -- see the resume comment in __init__ for why.
+fit() does this every epoch:
+  1. one gradient-descent pass over train (lat-weighted MSE)
+  2. one no-grad pass over val (same loss, no weight updates)
+  3. step the CosineAnnealingLR scheduler (decays LR every epoch on a
+     fixed curve, unlike ReduceLROnPlateau which reacts to val loss)
+  4. save latest.pt unconditionally
+  5. if val loss improved, also save best.pt and reset the early-stopping
+     counter; otherwise count towards early_stopping_patience
+
+Auto-resume happens in __init__: if latest.pt already exists, training
+picks up from there automatically, so rerunning the same command is
+always safe.
 """
 
 from __future__ import annotations
@@ -42,21 +30,23 @@ from weather_fno.utils.checkpoint import load_checkpoint, save_checkpoint
 
 class Trainer:
     def __init__(self, model, optimizer, cfg, lat_weight_tensor, device, target_mode: str = "direct"):
+        """
+        Args:
+            cfg: a TrainingConfig (not the full Config).
+            target_mode: "direct" -- loss target is y (the full next
+                state). "residual" -- loss target is (y - x) instead, so
+                the model learns to predict the delta. Pass
+                cfg.model.target_mode from the caller.
+        """
         self.model = model.to(device)
         self.optimizer = optimizer
         self.cfg = cfg
         self.lat_weight_tensor = lat_weight_tensor
         self.device = device
-        # "direct": loss target is y. "residual": loss target is (y - x),
-        # so the model is trained to predict the delta instead of the full
-        # next state -- see ModelConfig.target_mode. Passed in explicitly
-        # (rather than read off self.cfg) since self.cfg is TrainingConfig,
-        # not the full Config -- callers pass cfg.model.target_mode.
         self.target_mode = target_mode
 
         # T_max defaults to the full epoch budget, so the cosine curve
-        # reaches min_lr right at the end of training (if early stopping
-        # cuts a run short, the curve just doesn't finish -- fine).
+        # reaches min_lr right at the end of training.
         t_max = cfg.lr_scheduler_t_max or cfg.epochs
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -68,62 +58,42 @@ class Trainer:
         self.start_epoch = 0
         self.best_val_loss = float("inf")
 
-        # Auto-resume: if a checkpoint already exists, pick up from there
-        # with no flag required — makes "rerun the same command" safe.
+        # Auto-resume from latest.pt if it exists.
         ckpt = load_checkpoint(cfg.checkpoint_dir, "latest.pt", self.model, self.optimizer, device)
         if ckpt is not None:
-            # The checkpoint's weights were trained under WHATEVER
+            # A checkpoint's weights were trained under whatever
             # target_mode produced them -- resuming under a different one
-            # would keep training against a different loss target than the
-            # one those weights already encode, silently corrupting the
-            # run rather than erroring. ckpt.get(..., "direct") covers
-            # checkpoints saved before target_mode existed at all.
+            # would train against the wrong loss target. ckpt.get(...)
+            # default covers checkpoints saved before target_mode existed.
             ckpt_target_mode = ckpt.get("target_mode", "direct")
             if ckpt_target_mode != self.target_mode:
                 raise ValueError(
                     f"Checkpoint at '{cfg.checkpoint_dir}/latest.pt' was trained with "
                     f"target_mode='{ckpt_target_mode}', but this run is configured with "
-                    f"target_mode='{self.target_mode}'. Resuming under a different "
-                    f"target_mode would train against the wrong loss target -- use a "
-                    f"distinct run_name for a fresh run instead."
+                    f"target_mode='{self.target_mode}'. Use a distinct run_name for a "
+                    f"fresh run instead."
                 )
             self.start_epoch = ckpt["epoch"] + 1
             self.best_val_loss = ckpt["best_val_loss"]
             self.history = ckpt["history"]
-            # Replay the scheduler to the epoch already reached, rather
-            # than restoring a saved scheduler state_dict wholesale. A
-            # state_dict carries T_max/eta_min/base_lrs too, not just the
-            # epoch position -- if `epochs` (hence T_max) was deliberately
-            # changed since this checkpoint was saved (e.g. extending a
-            # run that undershot), a wholesale restore would silently
-            # bring back the OLD T_max, and since cosine is periodic,
-            # stepping past a stale T_max sends the LR back UP instead of
-            # continuing to decay.
-            #
-            # Must use the closed-form step(epoch=...) here, NOT a loop of
-            # bare step() calls -- verified directly (see CODE_REFERENCE.md):
-            # bare step()'s "chainable" form computes the next LR
-            # recursively from the OPTIMIZER'S CURRENT lr, and
-            # optimizer.load_state_dict() just above (inside
-            # load_checkpoint) already overwrote that to whatever value was
-            # saved -- already fully decayed, in the common case of
-            # resuming near the end of a run. A loop of bare steps from
-            # that corrupted starting point stays corrupted forever (empty
-            # -- degenerates to a flat line at min_lr); the closed form
-            # recomputes purely from epoch count and THIS run's own
-            # base_lrs (captured at scheduler construction, above, before
-            # load_checkpoint touched anything), so it recovers correctly
-            # regardless of what the optimizer's lr currently says. The
-            # `epoch` parameter is soft-deprecated by PyTorch in favour of
-            # bare step() -- that advice doesn't apply to this one-off
-            # resume-time replay, so the warning is expected and silenced.
-            # +1: at save time, `epoch` epochs (0..ckpt["epoch"] inclusive)
-            # had each already called .step() once, on top of the implicit
-            # last_epoch=0 set at construction -- so the scheduler's TRUE
-            # position was ckpt["epoch"] + 1 steps in, not ckpt["epoch"].
-            # Verified directly against an uninterrupted reference run
-            # (see CODE_REFERENCE.md) -- without +1 every resumed run
-            # quietly repeats one epoch's LR value twice.
+
+            # Replaying the scheduler correctly on resume is trickier than
+            # it looks -- two things matter here:
+            #   1. Use the CLOSED-FORM scheduler.step(epoch=...), not a
+            #      loop of bare step() calls. Bare step() computes the
+            #      next LR from the OPTIMIZER'S CURRENT lr, which
+            #      load_checkpoint just overwrote to its already-decayed,
+            #      end-of-run value -- looping bare step() from there
+            #      never recovers. The closed form recomputes purely from
+            #      epoch count and this run's own base_lrs instead, so
+            #      it's unaffected by whatever lr got loaded.
+            #   2. Use ckpt["epoch"] + 1, not ckpt["epoch"]. At save time,
+            #      epoch 0..ckpt["epoch"] had each already called .step()
+            #      once, so the scheduler's true position is one step
+            #      further than the saved epoch number.
+            # (Both verified against an uninterrupted reference run --
+            # see CODE_REFERENCE.md. The scheduler.step(epoch=...) form is
+            # soft-deprecated by PyTorch, hence the warning suppression.)
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*")
                 warnings.filterwarnings("ignore", message=".*epoch parameter.*")
@@ -131,6 +101,7 @@ class Trainer:
             print(f"Resumed from checkpoint at epoch {ckpt['epoch']}")
 
     def _run_epoch(self, loader: DataLoader, train: bool) -> float:
+        """One pass over `loader`. Updates weights only if train=True."""
         self.model.train(mode=train)
         total_loss, n_batches = 0.0, 0
 
@@ -139,8 +110,6 @@ class Trainer:
 
             with torch.set_grad_enabled(train):
                 pred = self.model(x)
-                # residual mode: the model predicts du = y - x, so the
-                # loss target is the delta, not the full next state.
                 target = (y - x) if self.target_mode == "residual" else y
                 loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
 
@@ -155,10 +124,11 @@ class Trainer:
         return total_loss / max(n_batches, 1)
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader):
+        """Train until cfg.epochs or early stopping, whichever comes
+        first. Returns the loss history dict."""
         patience_counter = 0
 
         for epoch in range(self.start_epoch, self.cfg.epochs):
-            # 1-2. Train then validate this epoch.
             t0 = time.time()
             train_loss = self._run_epoch(train_loader, train=True)
             val_loss = self._run_epoch(val_loader, train=False)
@@ -167,17 +137,15 @@ class Trainer:
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
 
-            # 3. Step the cosine LR schedule -- no val_loss argument, unlike
-            # ReduceLROnPlateau: this moves the LR along its curve every
-            # epoch on a fixed schedule, not in response to plateaus.
+            # Cosine schedule moves every epoch on its fixed curve --
+            # unlike ReduceLROnPlateau, it takes no val_loss argument.
             self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]["lr"]
 
             print(f"epoch {epoch:03d} | train {train_loss:.4f} | val {val_loss:.4f} | "
                   f"lr {current_lr:.2e} | {elapsed:.1f}s")
 
-            # 4. Always checkpoint latest.pt, regardless of whether this
-            # was the best epoch -- this is what auto-resume picks up from.
+            # Always save latest.pt -- this is what auto-resume picks up.
             state = {
                 "epoch": epoch,
                 "model_state": self.model.state_dict(),
@@ -189,9 +157,7 @@ class Trainer:
             }
             save_checkpoint(state, self.cfg.checkpoint_dir, "latest.pt")
 
-            # 5. best.pt + early stopping, driven by validation loss only --
-            # a plain safety net independent of the LR schedule now, since
-            # the cosine curve doesn't react to plateaus itself.
+            # best.pt + early stopping, driven by val loss only.
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 state["best_val_loss"] = self.best_val_loss

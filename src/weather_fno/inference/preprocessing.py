@@ -1,16 +1,10 @@
 """
-Preprocessing for inference-time data (any configured InferenceTarget:
-native full-resolution, 1.5deg, or the coarse store itself).
-
-Separate module from `data/preprocessing.py` specifically for the one
-thing that's genuinely different at inference time: relative humidity may
-need to be DERIVED from specific humidity + temperature rather than read
-directly (some stores provide specific humidity as the prognostic
-variable instead). The axis-flip and normalisation steps below are NOT
-reimplemented here — they delegate straight to `data/preprocessing.py`,
-since flipping/normalising an array doesn't actually depend on where that
-array came from; keeping two copies of the same three-line function
-around was pure duplication with nothing inference-specific about it.
+Preprocessing specific to inference-time data. The one real difference
+from training data: some inference stores don't provide relative humidity
+directly, so it has to be derived from specific humidity + temperature.
+Axis-flip and normalisation are just thin wrappers around
+data/preprocessing.py -- no need to duplicate those, they work the same
+regardless of where the array came from.
 """
 
 from __future__ import annotations
@@ -29,36 +23,21 @@ def compute_relative_humidity(
 ) -> np.ndarray:
     """
     Derive relative humidity (fraction, 0-1) from specific humidity and
-    temperature on a pressure-level surface.
+    temperature on a pressure-level surface, using Tetens' formula for
+    saturation vapour pressure.
 
-    pressure_hpa is a constant, not a field — since specific_humidity and
-    temperature are already given ON a pressure-level surface (500 or 850
-    hPa), that level number IS the pressure at every gridpoint, so there's
-    no separate pressure field to load from the store.
+    pressure_hpa is a constant, not a field: specific_humidity and
+    temperature are already given ON a pressure level (500 or 850 hPa), so
+    that level number is the pressure everywhere in the field.
 
-    Formula (standard meteorological approximation):
-      1. Saturation vapour pressure from temperature (Tetens' formula).
-      2. Actual vapour pressure from specific humidity:
-         e = q * p / (0.622 + 0.378 * q)
-      3. Relative humidity = e / e_sat
-
-    Output is a FRACTION (0-1), matching the convention every source that
-    provides relative_humidity directly (the coarse training store,
-    1p5deg) already uses -- confirmed live against those stores'
-    real values (2026-08-14). This used to multiply by 100 and return a
-    percentage instead, which silently fed native_highres's derived
-    r500/r850 into the model at ~100x the scale the training
-    normalisation stats (fit on the coarse store's 0-1 values) expect --
-    see CODE_REFERENCE.md.
+    Must return a FRACTION (0-1), not a percentage -- that's the
+    convention every store that provides relative_humidity directly
+    already uses, and the model was trained on that convention.
 
     Args:
-        specific_humidity: kg/kg. CONFIRMED (2026-08-14) directly against
-            the native store's own `units` attribute ("kg kg**-1").
-        temperature: Kelvin. CONFIRMED (2026-08-14) directly against the
-            native store's own `units` attribute ("K") -- Tetens' formula
-            below converts to Celsius internally assuming Kelvin input.
-        pressure_hpa: the pressure level these fields sit on, e.g. 500 or
-            850 (spec.level from the ChannelSpec calling this).
+        specific_humidity: kg/kg.
+        temperature: Kelvin.
+        pressure_hpa: the pressure level these fields are on (e.g. 500).
 
     Returns:
         Relative humidity as a fraction (0-1), same shape as inputs.

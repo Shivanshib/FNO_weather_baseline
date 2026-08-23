@@ -1,31 +1,20 @@
 """
 Score a trained model's autoregressive forecast against ground truth.
 
-Separate from predict.py because this needs GROUND TRUTH at every lead
-time (not just an initial condition) to compare against — predict.py stays
-focused on "produce a forecast", this module is "how good was it".
+Separate from predict.py because scoring needs GROUND TRUTH at every lead
+time, not just an initial condition -- predict.py stays focused on
+producing a forecast, this module is about how good it was.
 
-Main process, per target, in evaluate_target():
-  1. fetch an initial condition PLUS forecast_lead_steps of real ground
-     truth (load_inference_data with n_timesteps = lead_steps + 1)
-  2. run the SAME autoregressive rollout predict.py uses, starting from
-     that initial condition
-  3. at every lead time, score the rollout's prediction against ground
-     truth AND against a persistence baseline (repeat the initial
-     condition unchanged) -- lat-weighted RMSE per channel
-
-Deliberately keeps the full forecast/ground-truth arrays in memory only,
-never writing them to disk: for the native full-resolution target, a
-single (forecast_lead_steps, 20, 721, 1440) float32 array is already ~2GB,
-and writing that (twice — forecast AND ground truth) risks exactly the
-kind of disk-quota failure the training pipeline hit earlier. Only the
-small per-lead-time metrics (a few KB) and the resulting plot images get
-persisted — see scripts/evaluate.py.
+Keeps the full forecast/ground-truth arrays in memory only, never writing
+them to disk -- a single native-resolution array is already ~2GB, so
+saving that (twice) risks a disk-quota problem for no benefit. Only the
+small per-lead-time metrics and the resulting plots get saved
+(scripts/evaluate.py does that).
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 import torch
@@ -39,14 +28,9 @@ from weather_fno.training.metrics import lat_weighted_rmse_per_channel, lat_weig
 
 
 def get_target_lat_lon(cfg: Config, target: InferenceTarget):
-    """
-    Real lat/lon coordinate values for `target`'s own grid, flipped to
-    match the row/column order load_inference_data actually produces for
-    that target (same reasoning as GCSWeatherDataset.lat_values for the
-    training grid) — a metadata-only read, no array data downloaded.
-
-    Returns (lat_values, lon_values).
-    """
+    """Real lat/lon coordinate arrays for `target`'s grid, flipped to
+    match the row/column order load_inference_data actually produces.
+    Metadata-only -- no array data downloaded. Returns (lat_values, lon_values)."""
     ds = open_dataset(target.gcs_bucket_path)
     lat_values = ds[cfg.data.lat_dim].values
     lon_values = ds[cfg.data.lon_dim].values
@@ -66,17 +50,15 @@ def evaluate_target(
     device,
 ) -> dict:
     """
-    Fetches an initial condition PLUS forecast_lead_steps of ground truth
-    for `target`, runs the autoregressive rollout (predict.py::rollout),
-    and scores it against ground truth AND a persistence baseline
-    (repeating the initial condition unchanged at every lead time — the
-    standard "is the model adding any skill at all beyond doing nothing"
+    Fetch an initial condition plus forecast_lead_steps of ground truth
+    for `target`, run the autoregressive rollout, and score it against
+    ground truth AND a persistence baseline (repeat the initial condition
+    unchanged -- the standard "is the model better than doing nothing"
     check) at every lead time, per channel.
 
     Returns a dict with lead_hours, model_rmse (n_steps, C),
     persistence_rmse (n_steps, C), plus the in-memory arrays needed for
-    plotting (initial_condition, forecast, ground_truth — physical units,
-    NOT persisted to disk by this function).
+    plotting (initial_condition, forecast, ground_truth -- physical units).
     """
     # 1. Fetch initial condition + real ground truth for every lead time.
     n_steps = cfg.inference.forecast_lead_steps
@@ -101,10 +83,6 @@ def evaluate_target(
         gt_step = torch.from_numpy(ground_truth[step:step + 1]).float()
         pred_step = torch.from_numpy(forecast[step:step + 1]).float()
         model_rmse[step] = lat_weighted_rmse_per_channel(pred_step, gt_step, weights).numpy()
-        # Persistence: "predict no change from the initial condition" —
-        # computed directly against initial_t rather than materialising a
-        # (n_steps, C, H, W) repeated array, which would double memory use
-        # for no reason.
         persistence_rmse[step] = lat_weighted_rmse_per_channel(initial_t, gt_step, weights).numpy()
 
     return {
@@ -118,9 +96,9 @@ def evaluate_target(
 
 
 def run_evaluation(cfg: Config, train_stats: Dict[str, np.ndarray]) -> Dict[str, dict]:
-    """Evaluates every target in cfg.inference.targets against ground
+    """Evaluate every target in cfg.inference.targets against ground
     truth, using the same trained checkpoint for all of them. Returns
-    {target.name: result} — see evaluate_target for the result shape."""
+    {target.name: result} -- see evaluate_target for the result shape."""
     device = torch.device(cfg.training.device if torch.cuda.is_available() else "cpu")
     model = load_trained_model(cfg, device)
 

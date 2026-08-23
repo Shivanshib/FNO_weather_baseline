@@ -1,22 +1,15 @@
 """
-Fast end-to-end smoke test for the whole pipeline: data fetch, model
-build, training, checkpoint save + resume, plotting, and inference
-(including relative-humidity derivation) -- all in well under a minute.
+Fast end-to-end smoke test: data fetch, model build, training, checkpoint
+save + resume, plotting, and inference -- all in well under a minute.
 
-Runs against the SAME config as a real run (channels, flip settings, GCS
-paths, model architecture) but overrides the date ranges and epoch count
-to a tiny slice, and redirects every output path to outputs/smoketest/ so
-it can never touch or interfere with a real run's checkpoints, cache, or
-auto-resume state.
+Runs the SAME config as a real run, but with tiny date ranges/epoch count,
+and every output path redirected to outputs/smoketest/ so it never touches
+a real run's checkpoints or cache.
 
-Meant to be run right after SSHing into a new machine (e.g. a university
-GPU node) and before starting a real overnight run -- confirms GCS is
-reachable from THIS machine (some cluster compute nodes have no outbound
-internet access, only the login node does -- worth knowing before, not
-during, an overnight job), the GPU is visible, the configured
-num_workers setting actually works here, and the full pipeline -- including
-the checkpoint RESUME path specifically -- runs correctly, without waiting
-minutes/hours to find out something's wrong.
+Meant to be run right after moving to a new machine (e.g. a university GPU
+node) and before starting a real training run -- catches GCS reachability,
+GPU visibility, and num_workers problems in under a minute instead of
+partway through an overnight job.
 
 Usage:
     python scripts/smoke_test.py --config configs/baseline_fno.yaml
@@ -59,29 +52,21 @@ def step(name: str):
 
 
 def build_smoketest_config(base_config_path: str):
+    """Same config as a real run, but with a tiny date range/epoch count
+    and its own run_name ("smoketest") so every output path lands under
+    outputs/smoketest/, fully isolated from a real run's checkpoints."""
     cfg = load_config(base_config_path)
 
-    # Tiny time windows -- just enough timesteps for a handful of (x, y)
-    # pairs on each side of the train/val split.
     cfg.run_name = "smoketest"
     cfg.data.train_start = "2000-01-01"
     cfg.data.train_end = "2000-01-03"
     cfg.data.val_start = "2000-02-01"
     cfg.data.val_end = "2000-02-02"
-
     cfg.training.epochs = 2
-    # Deliberately NOT overriding device/num_workers -- those are exactly
-    # what we want this smoke test to validate on THIS machine.
+    # NOT overriding device/num_workers -- validating those on THIS
+    # machine is the whole point of this script.
 
-    # Re-derive every namespaced path now that run_name is "smoketest" --
-    # gives outputs/smoketest/{checkpoints,plots,logs,stats,predictions},
-    # same as SMOKETEST_DIR always meant, but computed the same way a
-    # real run's paths are rather than hand-rolled here separately (see
-    # config.py::derive_run_paths). This is also what keeps this smoke
-    # test's checkpoints/cache fully isolated from a real run's -- a
-    # different run_name always means a completely different folder, by
-    # construction, not by remembering to redirect every path by hand.
-    derive_run_paths(cfg)
+    derive_run_paths(cfg)  # re-derive now that run_name changed
     assert cfg.training.checkpoint_dir == str(SMOKETEST_DIR / "checkpoints")
 
     return cfg
@@ -133,7 +118,7 @@ def main():
         assert (Path(cfg.training.checkpoint_dir) / "latest.pt").exists()
         assert (Path(cfg.training.checkpoint_dir) / "best.pt").exists()
 
-    with step("resume from checkpoint (this exact path broke on PyTorch >=2.6 -- see CODE_REFERENCE.md)"):
+    with step("resume from checkpoint"):
         cfg.training.epochs = 4
         model2 = build_model(cfg.model)
         optimizer2 = torch.optim.Adam(model2.parameters(), lr=cfg.training.learning_rate,

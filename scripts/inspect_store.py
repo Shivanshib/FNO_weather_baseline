@@ -1,14 +1,11 @@
 """
-One-off inspection script — run this BEFORE trusting any of the axis-order,
-dimension-name, or channel-name assumptions currently baked into
-configs/baseline_fno.yaml.
+One-off inspection script -- run this before trusting any axis-order,
+dimension-name, or channel-name assumptions in configs/baseline_fno.yaml.
 
-Opens the configured GCS stores (training + inference) and prints back the
-ground truth: which variables actually exist, what their dimensions are
-called and what order they're in, which way latitude runs, what longitude
-convention is used, and what time range is really available. Fix
-configs/baseline_fno.yaml to match whatever this disagrees with — don't
-edit this script to make the mismatch go away.
+Opens the configured GCS stores and prints the ground truth: which
+variables exist, their dimension names/order, latitude direction,
+longitude convention, and available time range. Fix the config to match
+whatever this disagrees with -- don't edit this script instead.
 
 Usage:
     python scripts/inspect_store.py --config configs/baseline_fno.yaml
@@ -31,6 +28,9 @@ def inspect(
     flip_lon: bool,
     derive_relative_humidity: bool = False,
 ) -> None:
+    """Print what's actually in one GCS store: available variables,
+    whether cfg's configured channels/dims/flips match it, latitude
+    direction, longitude convention, and time range."""
     print(f"\n{'=' * 70}\nInspecting: {label}\n{gcs_bucket_path}\n{'=' * 70}")
 
     ds = xr.open_zarr(gcs_bucket_path, chunks={"time": 1}, storage_options={"token": "anon"})

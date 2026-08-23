@@ -1,11 +1,11 @@
 """
 CLI entrypoint: evaluate a trained model's autoregressive forecast against
 ground truth on every configured inference target -- lat-weighted RMSE per
-lead time (vs a persistence baseline), plus forecast-vs-actual map plots.
+lead time vs a persistence baseline, plus forecast-vs-actual map plots.
 
 Saves, per target, into cfg.inference.output_dir:
   {target.name}_eval_metrics.npz       lead_hours, model_rmse, persistence_rmse
-  {target.name}_rmse_vs_lead_time.png  scorecard for a handful of headline channels
+  {target.name}_rmse_vs_lead_time.png  scorecard for a few headline channels
   {target.name}_{MAP_CHANNEL}_maps.png ground truth / forecast / error maps
 
 Usage:

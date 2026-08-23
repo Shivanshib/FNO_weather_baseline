@@ -1,14 +1,9 @@
 """
-Radially-averaged 2D power spectrum -- the standard diagnostic for
-comparing spectral content between fields (e.g. forecast vs ground truth,
-or the same field at different resolutions), independent of exact grid
-size.
-
-This is a PLANAR approximation (flat 2D FFT on the lat/lon grid, not a
-proper spherical-harmonic treatment) -- reasonable for a baseline
-diagnostic and standard practice in ML weather forecasting papers for
-exactly this kind of "is the model blurry / injecting noise" check, but
-not a rigorous spherical spectral analysis.
+Radially-averaged 2D power spectrum -- a standard diagnostic for comparing
+spectral content between fields (forecast vs ground truth, or the same
+field at different resolutions). This is a flat 2D FFT on the lat/lon
+grid, not a proper spherical-harmonic transform -- an approximation, but
+good enough for spotting things like "is the model blurry".
 """
 
 from __future__ import annotations
@@ -20,38 +15,25 @@ import numpy as np
 
 def radial_power_spectrum(field: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
-    2D power spectrum of a real-valued (H, W) field, radially averaged
+    2D power spectrum of a real-valued (H, W) field, averaged radially
     over wavenumber magnitude.
 
-    Wavenumber is expressed in "cycles per full domain" (k=1 means one
-    full wave spanning the whole grid) rather than cycles-per-gridpoint --
-    this is what makes spectra from DIFFERENT resolutions directly
-    comparable on the same x-axis (the physical domain, e.g. 360 degrees
-    of longitude, is the same regardless of how many gridpoints sample
-    it), and it's also the same convention an FNO's own `n_modes` uses, so
-    the model's own mode cutoff can be marked directly on the same plot.
+    Wavenumber is in "cycles per full domain" (k=1 = one full wave across
+    the whole grid), not cycles per gridpoint -- this makes spectra from
+    DIFFERENT resolutions comparable on the same x-axis, and matches the
+    convention an FNO's own n_modes uses.
+
+    Uses norm="forward" (FFT divided by N=H*W) instead of numpy's default.
+    This matters because we compare spectra across different grid sizes:
+    with the default (unnormalised) FFT, the same physical signal sampled
+    on a bigger grid gets a bigger squared magnitude just from having more
+    points -- norm="forward" cancels that out, so power at a given
+    wavenumber only depends on the actual signal, not the grid size.
 
     Returns:
         (wavenumber, power) -- both 1D arrays. power[i] is the mean
-        squared FFT magnitude of all 2D frequency components whose
-        magnitude falls in [wavenumber[i], wavenumber[i] + 1).
-
-    Uses norm="forward" (FFT itself divided by N=H*W) rather than numpy's
-    default unnormalised transform. This matters specifically because this
-    function is meant to compare spectra across DIFFERENT grid sizes (e.g.
-    a 1440x721 store vs a 240x121 one): for a single-frequency component
-    of fixed physical amplitude A, the default unnormalised FFT's peak
-    magnitude scales with N (so squared power scales with N^2); even
-    norm="ortho" (dividing by sqrt(N)) leaves a residual factor of N in
-    the squared magnitude. Only norm="forward" gives a peak power that's
-    independent of how many gridpoints sample the same physical field --
-    verified by hand against a synthetic single-wavenumber field (e.g.
-    np.cos(2*pi*lon/360)) sampled at two different grid sizes: with
-    norm="forward" the peak power at that wavenumber comes out identical
-    for both; with the default norm or norm="ortho" it does not. There is
-    no tests/ directory in this project (no automated test suite) -- this
-    was a one-off manual check, worth re-doing by hand if this function
-    is ever changed.
+        squared FFT magnitude of all frequency components whose magnitude
+        falls in [wavenumber[i], wavenumber[i] + 1).
     """
     h, w = field.shape
     fft = np.fft.fft2(field - field.mean(), norm="forward")

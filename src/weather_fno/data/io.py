@@ -1,10 +1,6 @@
 """
-GCS zarr store access.
-
-Kept as a single-function module so both the training dataset
-(data/gcs_dataset.py) and the inference loader (inference/predict.py) open
-stores the exact same way — no risk of one path picking up different
-storage options than the other.
+Opens a zarr store on GCS. One function, used by both the training
+dataset and the inference loader, so every store gets opened the same way.
 """
 
 from __future__ import annotations
@@ -14,14 +10,14 @@ import xarray as xr
 
 def open_dataset(gcs_bucket_path: str) -> xr.Dataset:
     """
-    Open a zarr store on GCS.
+    Lazily open a zarr store (no array data downloaded yet).
 
-    WeatherBench2's public buckets are readable anonymously, so anonymous
-    access is tried first, with consolidated metadata (a single small
-    `.zmetadata` read instead of listing the whole store). Prints which
-    path actually succeeded — this only ever opens the store lazily (no
-    array data is downloaded here), but with three fallback tiers it's
-    otherwise impossible to tell which one silently fired.
+    WeatherBench2's buckets are public, so we try anonymous access first
+    (fast path: consolidated metadata = one small file read instead of
+    listing the whole store), then fall back step by step if that fails.
+    Still anonymous on the second try too — jumping straight to real
+    credential lookup can hang for a while on a machine that has none
+    configured, and public buckets basically never need credentials anyway.
     """
     try:
         ds = xr.open_zarr(gcs_bucket_path, storage_options={"token": "anon"}, consolidated=True)
@@ -29,13 +25,8 @@ def open_dataset(gcs_bucket_path: str) -> xr.Dataset:
         return ds
     except Exception as e:
         print(f"[open_dataset] {gcs_bucket_path}: anonymous+consolidated open failed "
-              f"({e!r}); retrying anonymous without consolidated metadata "
-              f"(slower — lists the store's full structure)...")
+              f"({e!r}); retrying without consolidated metadata...")
 
-    # Still anonymous here deliberately — a public bucket almost never needs
-    # real credentials, and jumping straight to default-credential
-    # resolution on a machine with none configured can hang for a while
-    # probing for them before it even gets to opening the store.
     try:
         ds = xr.open_zarr(gcs_bucket_path, storage_options={"token": "anon"})
         print(f"[open_dataset] {gcs_bucket_path}: opened anonymously (non-consolidated)")

@@ -14,6 +14,7 @@ small per-lead-time metrics and the resulting plots get saved
 
 from __future__ import annotations
 
+import time
 from typing import Dict, Optional
 
 import numpy as np
@@ -67,9 +68,12 @@ def evaluate_target(
     not plotting them, not by erroring.
 
     Returns a dict with lead_hours, model_rmse (n_steps, C),
-    persistence_rmse (n_steps, C), optionally climatology_rmse (n_steps, C)
-    and model_acc (n_steps, C), plus the in-memory arrays needed for
-    plotting (initial_condition, forecast, ground_truth -- physical units).
+    persistence_rmse (n_steps, C), rollout_time_seconds (a scalar -- the
+    n_steps forward passes only, not the data fetch or scoring around it,
+    so it's directly comparable across different model architectures),
+    optionally climatology_rmse (n_steps, C) and model_acc (n_steps, C),
+    plus the in-memory arrays needed for plotting (initial_condition,
+    forecast, ground_truth -- physical units).
     """
     # 1. Fetch initial condition + real ground truth for every lead time.
     n_steps = cfg.inference.forecast_lead_steps
@@ -82,7 +86,26 @@ def evaluate_target(
     # 2. Autoregressive rollout from that same initial condition.
     arr_norm = normalise_for_inference(arr, train_stats)
     x0 = torch.from_numpy(arr_norm[0:1]).float()
+
+    # Warm-up: one throwaway forward pass on this target's own input
+    # shape, forced to fully finish via .cpu() before the timer starts.
+    # CUDA context init, first-call kernel compilation/algorithm
+    # selection, and the GPU ramping up from idle clocks are all real,
+    # one-time costs -- for a short rollout they'd otherwise dominate
+    # rollout_time_seconds instead of reflecting steady-state performance,
+    # and could bias a comparison between architectures with different
+    # first-call compile costs. Output discarded; model is already in
+    # eval() (load_trained_model), so this can't mutate any state.
+    with torch.no_grad():
+        model(x0.to(device)).cpu()
+
+    # Timed on its own (not the fetch above, the warm-up, or the scoring
+    # below) -- this is the actual per-model inference cost: n_steps
+    # forward passes, nothing else, comparable directly across different
+    # architectures/factorizations regardless of forecast_lead_steps.
+    t0 = time.time()
     predictions_norm = rollout(model, x0, n_steps, device, target_mode=cfg.model.target_mode)
+    rollout_time_seconds = time.time() - t0
     forecast = denormalise(predictions_norm, train_stats)
 
     # 3. Score model AND persistence against ground truth, per lead time.
@@ -114,6 +137,7 @@ def evaluate_target(
         "lead_hours": np.arange(1, n_steps + 1) * 6,
         "model_rmse": model_rmse,
         "persistence_rmse": persistence_rmse,
+        "rollout_time_seconds": rollout_time_seconds,
         "initial_condition": initial_condition,
         "forecast": forecast,
         "ground_truth": ground_truth,
@@ -162,6 +186,7 @@ def run_evaluation(
             final_climatology_rmse = results[target.name]["climatology_rmse"][-1].mean()
             final_acc = results[target.name]["model_acc"][-1].mean()
             msg += f", climatology={final_climatology_rmse:.4g}, ACC={final_acc:.3f}"
+        msg += f" (rollout: {results[target.name]['rollout_time_seconds']:.1f}s)"
         print(msg)
 
     return results

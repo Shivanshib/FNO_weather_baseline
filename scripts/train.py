@@ -84,6 +84,8 @@ def main():
 
     # 3. Model and optimizer.
     model = build_model(cfg.model)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model has {n_params:,} parameters")
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training.learning_rate,
                                   weight_decay=cfg.training.weight_decay)
 

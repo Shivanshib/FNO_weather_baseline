@@ -54,7 +54,7 @@ def main():
 
     with open(results_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["run_name", "overrides", "best_val_loss"])
+        writer.writerow(["run_name", "overrides", "best_val_loss", "n_params", "train_time_seconds"])
 
         for i, overrides in enumerate(SWEEP_GRID):
             # 1. Build this entry's config: apply overrides, give it its
@@ -83,6 +83,7 @@ def main():
 
             # 3. Model + optimizer from this entry's config.
             model = build_model(cfg.model)
+            n_params = sum(p.numel() for p in model.parameters())
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training.learning_rate,
                                           weight_decay=cfg.training.weight_decay)
 
@@ -90,10 +91,14 @@ def main():
 
             # 4. Train, then log the result immediately -- flushed after
             # every row so progress survives a crash partway through.
+            # n_params/train_time_seconds are the "cost" columns -- read
+            # straight from this entry's own model/history, not
+            # recomputed, so they're directly comparable across entries.
             trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
-            trainer.fit(train_loader, val_loader)
+            history = trainer.fit(train_loader, val_loader)
+            train_time_seconds = sum(history.get("epoch_time_seconds", []))
 
-            writer.writerow([cfg.run_name, overrides, trainer.best_val_loss])
+            writer.writerow([cfg.run_name, overrides, trainer.best_val_loss, n_params, train_time_seconds])
             f.flush()
 
 

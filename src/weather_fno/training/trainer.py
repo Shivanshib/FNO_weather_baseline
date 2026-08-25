@@ -160,7 +160,9 @@ class Trainer:
             train_loader_2step: DataLoader = None, val_loader_2step: DataLoader = None):
         """
         Train until cfg.epochs + cfg.finetune_epochs, or early stopping,
-        whichever comes first. Returns the loss history dict.
+        whichever comes first. Returns the history dict (train_loss,
+        val_loss, epoch_time_seconds -- one entry per epoch, all three
+        the same length, and all persisted across resumes).
 
         train_loader_2step/val_loader_2step (built from a MultiStepDataset
         with n_future_steps=2, see scripts/train.py) are required if
@@ -195,6 +197,11 @@ class Trainer:
 
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
+            # Pure compute time (excludes data-fetch/setup) -- persisted
+            # so total training cost survives resumes and is comparable
+            # across runs without re-timing anything. setdefault covers
+            # checkpoints saved before this field existed.
+            self.history.setdefault("epoch_time_seconds", []).append(elapsed)
 
             # Cosine schedule moves every epoch on its fixed curve --
             # unlike ReduceLROnPlateau, it takes no val_loss argument.
@@ -230,4 +237,8 @@ class Trainer:
                           f"{self.cfg.early_stopping_patience} epochs)")
                     break
 
+        total_seconds = sum(self.history.get("epoch_time_seconds", []))
+        print(f"Total training compute time (sum of every epoch this run has ever done, "
+              f"across all resumes -- excludes data-fetch/setup time): "
+              f"{total_seconds / 3600:.2f}h ({total_seconds:.0f}s)")
         return self.history

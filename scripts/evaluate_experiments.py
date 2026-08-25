@@ -3,10 +3,11 @@ Evaluates several trained experiments in sequence -- the companion to
 run_experiments.py's batch training. Each experiment runs as its own
 subprocess (same crash-isolation reasoning as run_experiments.py), then a
 combined summary table (mean RMSE across channels at the final lead time,
-model vs persistence, per target, per experiment) gets printed and saved
-to CSV, so you can see every experiment's results side by side without
-hunting through each run's own outputs/{run_name}/predictions/ folder
-individually.
+model vs persistence, plus the rollout's own wall-clock time -- the
+"cost" of inference, comparable across different architectures -- per
+target, per experiment) gets printed and saved to CSV, so you can see
+every experiment's results side by side without hunting through each
+run's own outputs/{run_name}/predictions/ folder individually.
 
 Doesn't recompute anything -- reads back the {target}_eval_metrics.npz
 each scripts/evaluate.py call already saves, same as any other consumer
@@ -45,7 +46,7 @@ def main():
     summary_path = Path(base_cfg.training.output_dir) / "batch_eval_summary.csv"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows = []  # (run_label, target_name, model_rmse, persistence_rmse)
+    rows = []  # (run_label, target_name, model_rmse, persistence_rmse, rollout_time_seconds)
 
     for experiment_path in args.experiments:
         label = Path(experiment_path).stem
@@ -71,18 +72,21 @@ def main():
             m = np.load(metrics_path)
             rows.append((label, target.name,
                          float(m["model_rmse"][-1].mean()),
-                         float(m["persistence_rmse"][-1].mean())))
+                         float(m["persistence_rmse"][-1].mean()),
+                         float(m["rollout_time_seconds"])))
 
     with open(summary_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["experiment", "target", "final_model_rmse", "final_persistence_rmse"])
+        writer.writerow(["experiment", "target", "final_model_rmse", "final_persistence_rmse",
+                          "rollout_time_seconds"])
         writer.writerows(rows)
 
-    print(f"\n{'=' * 70}\nSummary -- mean RMSE across channels at the final lead time "
-          f"(also written to {summary_path})\n{'=' * 70}")
-    print(f"{'experiment':30s} {'target':15s} {'model':>10s} {'persistence':>12s}")
-    for label, target_name, model_rmse, persistence_rmse in rows:
-        print(f"{label:30s} {target_name:15s} {model_rmse:10.4g} {persistence_rmse:12.4g}")
+    print(f"\n{'=' * 70}\nSummary -- mean RMSE across channels at the final lead time, plus "
+          f"inference cost (also written to {summary_path})\n{'=' * 70}")
+    print(f"{'experiment':30s} {'target':15s} {'model':>10s} {'persistence':>12s} {'rollout':>10s}")
+    for label, target_name, model_rmse, persistence_rmse, rollout_time in rows:
+        print(f"{label:30s} {target_name:15s} {model_rmse:10.4g} {persistence_rmse:12.4g} "
+              f"{rollout_time:9.1f}s")
 
 
 if __name__ == "__main__":

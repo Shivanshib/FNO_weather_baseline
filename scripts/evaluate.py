@@ -104,7 +104,8 @@ def main():
 
         metrics_path = out_dir / f"{target.name}_eval_metrics.npz"
         metrics_to_save = {"lead_hours": result["lead_hours"], "model_rmse": result["model_rmse"],
-                            "persistence_rmse": result["persistence_rmse"]}
+                            "persistence_rmse": result["persistence_rmse"],
+                            "rollout_time_seconds": result["rollout_time_seconds"]}
         if has_climatology:
             metrics_to_save["climatology_rmse"] = result["climatology_rmse"]
             metrics_to_save["model_acc"] = result["model_acc"]

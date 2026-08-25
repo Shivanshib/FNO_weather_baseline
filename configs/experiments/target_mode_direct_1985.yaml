@@ -1,0 +1,28 @@
+# One half of a direct-vs-residual comparison (see
+# configs/experiments/target_mode_residual_1985.yaml for the other half),
+# re-run on the expanded 30-year training window (data.train_start moved
+# to 1985-01-01 in configs/baseline_fno.yaml, 2026-08-25) -- a NEW
+# run_name rather than reusing target_mode_direct.yaml's, so this doesn't
+# auto-resume that run's checkpoint (trained on the old 2000-2014 range)
+# under different training data. Same architecture as
+# configs/baseline_fno.yaml exactly (no factorization, n_modes [16, 32],
+# hidden_channels 64, n_layers 4) -- this file only changes run_name and
+# model.target_mode, so any difference in results between the two runs
+# comes purely from direct-vs-residual prediction, not from some other
+# config difference.
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_direct_1985.yaml
+#   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_direct_1985.yaml --targets coarse
+run_name: "target_mode_direct_1985"
+
+model:
+  target_mode: "direct"
+
+training:
+  # Same seed as target_mode_residual_1985.yaml -- both start from
+  # identical weight init and see batches in identical order, so any
+  # difference in results is attributable to target_mode, not to random
+  # luck. (Already baseline_fno.yaml's default; set explicitly here so
+  # this file stays self-documenting on its own.)
+  seed: 42
+  epochs: 200

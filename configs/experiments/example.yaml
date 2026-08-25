@@ -1,0 +1,31 @@
+# Example experiment override -- a SMALL file naming just what's
+# different from configs/baseline_fno.yaml. Applied on top of --config at
+# load time (see config.py::apply_overrides):
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml
+#
+# Copy this per experiment, keeping only the keys that one actually
+# changes. Every run's full resolved config also gets written to
+# outputs/{run_name}/config_used.yaml at the start of training, so a
+# downloaded run folder stays self-documenting even after this file changes.
+#
+# run_name is REQUIRED -- every experiment needs its own, or its outputs
+# would land in (and auto-resume) the base run's folder instead of a
+# fresh one. load_config raises if it's missing.
+run_name: "example_experiment"
+
+# Any subset of model/training/data/inference, in the same nested shape
+# as the base YAML -- an unknown section or field name raises immediately.
+model:
+  n_modes: [12, 24]        # capped by the Nyquist ceiling of data.resolution
+  hidden_channels: 128
+  n_layers: 6
+  factorization: "tucker"  # TFNO compression -- needs a rank alongside it
+  rank: 0.5
+
+training:
+  epochs: 300
+  early_stopping_patience: 40
+
+# model.target_mode ("direct" | "residual") is a separate axis -- see
+# configs/experiments/residual_target.yaml for a dedicated example.

@@ -12,3 +12,8 @@ run_name: "target_mode_residual"
 
 model:
   target_mode: "residual"
+
+training:
+  # Same seed as target_mode_direct.yaml -- see that file's comment.
+  seed: 42
+  epochs: 200

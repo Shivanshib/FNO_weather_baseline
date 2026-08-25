@@ -79,6 +79,20 @@ training:
   num_workers: 4
   device: "cuda"  # falls back to cpu automatically if unavailable
 
+  # Seeds model weight init and DataLoader shuffle order (config.py::set_seed).
+  # Keep this the SAME across experiments you want to compare fairly (e.g.
+  # different target_mode or factorization settings) -- only override it
+  # per-experiment if you deliberately want a different random init.
+  seed: 42
+
+  # FourCastNet-style 2-step fine-tuning after the `epochs` above -- a
+  # FIXED part of this project's training recipe now, not an axis to
+  # compare with/without, so it lives here rather than per-experiment
+  # (every experiment inherits it unless it explicitly overrides
+  # finetune_epochs itself). See configs/experiments/twostep_finetune.yaml
+  # and Trainer._run_epoch's n_future_steps branch.
+  finetune_epochs: 50
+
   # CosineAnnealingLR: decays the LR from learning_rate down to min_lr
   # over lr_scheduler_t_max epochs (null = defaults to `epochs`, so the
   # curve spans the whole run). Scheduled, not reactive to val loss.

@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import copy
 import os
+import random
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
 import torch
 import yaml
 
@@ -89,6 +91,23 @@ class TrainingConfig:
     # to val loss like ReduceLROnPlateau.
     lr_scheduler_t_max: Optional[int] = None
     min_lr: float = 1.0e-6
+    # Seeds model weight init and DataLoader shuffle order (see
+    # set_seed()) -- the two biggest sources of run-to-run randomness in
+    # this pipeline. Same default for every config, so two experiments
+    # (e.g. two target_mode variants) are comparable out of the box unless
+    # one deliberately overrides it.
+    seed: int = 42
+    # FourCastNet-style fine-tuning: 0 (default) = plain single-step
+    # training for all `epochs`, unchanged from before this existed. > 0
+    # = after the `epochs` single-step epochs, train for this many
+    # additional epochs on a 2-step autoregressive rollout instead (model
+    # predicts x(k+1) from x(k), then x(k+2) from its OWN x(k+1)
+    # prediction, loss = sum of both steps' errors against their real
+    # ground truth) -- see Trainer.fit()/_run_epoch(). The LR schedule
+    # spans epochs + finetune_epochs as one continuous cosine curve, so
+    # fine-tuning continues at an already-low, still-decaying LR rather
+    # than jumping to a separate one.
+    finetune_epochs: int = 0
 
 
 @dataclass
@@ -135,6 +154,26 @@ def resolve_device(requested: str) -> torch.device:
         print("CUDA requested but not available — falling back to CPU.")
         return torch.device("cpu")
     return torch.device(requested)
+
+
+def set_seed(seed: int) -> None:
+    """
+    Seed every RNG this project touches: model weight init (torch) and
+    DataLoader shuffle order (torch's global RNG, which the default
+    RandomSampler draws from). Call once, right after load_config, before
+    building the model or any DataLoader.
+
+    Doesn't force CUDA into fully deterministic mode (torch.backends.cudnn
+    .deterministic / torch.use_deterministic_algorithms) -- FNO leans on
+    FFT-based ops that either lack a deterministic GPU implementation or
+    would run noticeably slower under one, for a source of noise that's
+    tiny compared to weight init/shuffle order. This gets the two sources
+    that actually matter for comparing configs, not bit-for-bit reproducibility.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def derive_run_paths(cfg: Config) -> None:

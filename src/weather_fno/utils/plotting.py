@@ -1,7 +1,10 @@
 """
 Every plot the project produces, one function each:
   plot_history            train/val loss curves
-  plot_rmse_vs_lead_time  model vs persistence RMSE scorecard
+  plot_rmse_vs_lead_time  model vs persistence (vs climatology, if
+                          available) RMSE scorecard
+  plot_acc_vs_lead_time   model anomaly correlation coefficient (ACC)
+                          scorecard, with a skill-threshold reference line
   plot_forecast_maps      ground truth / forecast / error map grid
   plot_power_spectrum     radial power spectrum comparison
 Plus recentre_longitude, a shared helper used before map plots.
@@ -78,15 +81,18 @@ def plot_rmse_vs_lead_time(
     title: str = "",
 ) -> None:
     """
-    Small multi-panel scorecard: model RMSE vs a persistence baseline over
-    lead time, one panel per headline channel. Separate panels because
-    different channels have very different scales (e.g. geopotential vs
-    temperature) -- a shared axis would flatten all but the largest one.
+    Small multi-panel scorecard: model RMSE vs a persistence baseline (and
+    a climatology baseline, if available) over lead time, one panel per
+    headline channel. Separate panels because different channels have
+    very different scales (e.g. geopotential vs temperature) -- a shared
+    axis would flatten all but the largest one.
 
     Args:
         result: one target's result dict from inference/evaluate.py
             (needs "lead_hours", "model_rmse" (n_steps, C),
-            "persistence_rmse" (n_steps, C)).
+            "persistence_rmse" (n_steps, C); "climatology_rmse"
+            (n_steps, C) plotted too if present -- coarse-grid targets
+            only, see data/climatology.py).
         channels: cfg.data.channels, used to map headline_channels'
             short_names to column indices.
         headline_channels: short_names to plot, e.g. ["t2m", "z500"].
@@ -102,15 +108,77 @@ def plot_rmse_vs_lead_time(
     nrows = -(-n // ncols)  # ceil division
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 3.5 * nrows), squeeze=False)
 
+    has_climatology = "climatology_rmse" in result
     for ax, short_name in zip(axes.flat, headline_channels):
         idx = idx_by_short_name[short_name]
         ax.plot(lead_days, result["model_rmse"][:, idx], label="model",
                  color=cm.viridis(0.2), marker="o", markersize=3)
         ax.plot(lead_days, result["persistence_rmse"][:, idx], label="persistence",
                  color=cm.viridis(0.7), marker="o", markersize=3, linestyle="--")
+        if has_climatology:
+            ax.plot(lead_days, result["climatology_rmse"][:, idx], label="climatology",
+                     color=cm.viridis(0.95), marker="o", markersize=3, linestyle=":")
         ax.set_title(short_name)
         ax.set_xlabel("lead time (days)")
         ax.set_ylabel("lat-weighted RMSE")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_acc_vs_lead_time(
+    result: dict,
+    channels: List[ChannelSpec],
+    headline_channels: Sequence[str],
+    out_path: str,
+    title: str = "",
+    skill_threshold: float = 0.6,
+) -> None:
+    """
+    Same layout as plot_rmse_vs_lead_time, but for the model's Anomaly
+    Correlation Coefficient (training/metrics.py::lat_weighted_acc)
+    instead of RMSE -- one panel per headline channel, model_acc vs lead
+    time, with a horizontal reference line at `skill_threshold`. ACC=0.6
+    is the conventional threshold below which a forecast is considered to
+    have lost useful skill (WeatherBench2/operational NWP convention).
+
+    Args:
+        result: one target's result dict from inference/evaluate.py --
+            needs "lead_hours" and "model_acc" (n_steps, C). Only present
+            for targets climatology was computed for (coarse-grid only,
+            see data/climatology.py) -- callers should skip this plot
+            entirely if "model_acc" isn't in the result.
+        channels, headline_channels: same as plot_rmse_vs_lead_time.
+    """
+    idx_by_short_name = {c.short_name: i for i, c in enumerate(channels)}
+    missing = [c for c in headline_channels if c not in idx_by_short_name]
+    if missing:
+        raise KeyError(f"headline_channels not found in channels: {missing}")
+
+    lead_days = result["lead_hours"] / 24
+    n = len(headline_channels)
+    ncols = min(n, 2)
+    nrows = -(-n // ncols)  # ceil division
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 3.5 * nrows), squeeze=False)
+
+    for ax, short_name in zip(axes.flat, headline_channels):
+        idx = idx_by_short_name[short_name]
+        ax.plot(lead_days, result["model_acc"][:, idx], label="model",
+                 color=cm.viridis(0.2), marker="o", markersize=3)
+        ax.axhline(skill_threshold, color="gray", linestyle="--",
+                   label=f"skill threshold ({skill_threshold})")
+        ax.set_title(short_name)
+        ax.set_xlabel("lead time (days)")
+        ax.set_ylabel("ACC")
+        ax.set_ylim(-0.05, 1.05)
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
 

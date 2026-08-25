@@ -1,6 +1,6 @@
 """
 Training loop: train/val epochs, LR scheduling, checkpointing, early
-stopping.
+stopping, and (optionally) FourCastNet-style 2-step fine-tuning.
 
 fit() does this every epoch:
   1. one gradient-descent pass over train (lat-weighted MSE)
@@ -10,6 +10,13 @@ fit() does this every epoch:
   4. save latest.pt unconditionally
   5. if val loss improved, also save best.pt and reset the early-stopping
      counter; otherwise count towards early_stopping_patience
+
+The first cfg.epochs epochs are plain single-step training. If
+cfg.finetune_epochs > 0, cfg.finetune_epochs MORE epochs follow after
+that, training on a 2-step autoregressive rollout instead (see
+_run_epoch's n_future_steps branch) -- both phases share one continuous
+epoch counter and one LR schedule, so auto-resume works the same way
+across the whole run, pretrain or fine-tune, no separate state needed.
 
 Auto-resume happens in __init__: if latest.pt already exists, training
 picks up from there automatically, so rerunning the same command is
@@ -45,9 +52,11 @@ class Trainer:
         self.device = device
         self.target_mode = target_mode
 
-        # T_max defaults to the full epoch budget, so the cosine curve
-        # reaches min_lr right at the end of training.
-        t_max = cfg.lr_scheduler_t_max or cfg.epochs
+        # T_max defaults to the full epoch budget -- pretrain PLUS
+        # fine-tune, so the cosine curve reaches min_lr right at the end
+        # of the whole run (fine-tuning continues the same decaying
+        # curve, not a separate schedule).
+        t_max = cfg.lr_scheduler_t_max or (cfg.epochs + cfg.finetune_epochs)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
             T_max=t_max,
@@ -100,8 +109,22 @@ class Trainer:
                 self.scheduler.step(ckpt["epoch"] + 1)
             print(f"Resumed from checkpoint at epoch {ckpt['epoch']}")
 
-    def _run_epoch(self, loader: DataLoader, train: bool) -> float:
-        """One pass over `loader`. Updates weights only if train=True."""
+    def _run_epoch(self, loader: DataLoader, train: bool, n_future_steps: int = 1) -> float:
+        """
+        One pass over `loader`. Updates weights only if train=True.
+
+        n_future_steps=1 (pretrain): loader yields (x, y) pairs, y shape
+        (B, C, H, W) -- one forward pass, one loss term, same as always.
+
+        n_future_steps>1 (fine-tune): loader yields (x, y) from a
+        MultiStepDataset, y shape (B, n_future_steps, C, H, W). Rolls the
+        model forward n_future_steps times, feeding its own reconstructed
+        output back in as the next input each time (exactly like
+        inference/predict.py::rollout, not like being handed the true
+        intermediate states) -- and sums the loss from every step before
+        one single backward pass, matching FourCastNet's fine-tuning
+        procedure.
+        """
         self.model.train(mode=train)
         total_loss, n_batches = 0.0, 0
 
@@ -109,9 +132,19 @@ class Trainer:
             x, y = x.to(self.device), y.to(self.device)
 
             with torch.set_grad_enabled(train):
-                pred = self.model(x)
-                target = (y - x) if self.target_mode == "residual" else y
-                loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
+                if n_future_steps == 1:
+                    pred = self.model(x)
+                    target = (y - x) if self.target_mode == "residual" else y
+                    loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
+                else:
+                    state = x
+                    loss = 0.0
+                    for step in range(n_future_steps):
+                        y_step = y[:, step]
+                        raw = self.model(state)
+                        target = (y_step - state) if self.target_mode == "residual" else y_step
+                        loss = loss + lat_weighted_mse(raw, target, self.lat_weight_tensor)
+                        state = (state + raw) if self.target_mode == "residual" else raw
 
                 if train:
                     self.optimizer.zero_grad()
@@ -123,15 +156,41 @@ class Trainer:
 
         return total_loss / max(n_batches, 1)
 
-    def fit(self, train_loader: DataLoader, val_loader: DataLoader):
-        """Train until cfg.epochs or early stopping, whichever comes
-        first. Returns the loss history dict."""
+    def fit(self, train_loader: DataLoader, val_loader: DataLoader,
+            train_loader_2step: DataLoader = None, val_loader_2step: DataLoader = None):
+        """
+        Train until cfg.epochs + cfg.finetune_epochs, or early stopping,
+        whichever comes first. Returns the loss history dict.
+
+        train_loader_2step/val_loader_2step (built from a MultiStepDataset
+        with n_future_steps=2, see scripts/train.py) are required if
+        cfg.finetune_epochs > 0 -- that's the fine-tune phase's data.
+        """
+        if self.cfg.finetune_epochs > 0 and (train_loader_2step is None or val_loader_2step is None):
+            raise ValueError(
+                "cfg.finetune_epochs > 0 but train_loader_2step/val_loader_2step weren't given."
+            )
+
+        total_epochs = self.cfg.epochs + self.cfg.finetune_epochs
         patience_counter = 0
 
-        for epoch in range(self.start_epoch, self.cfg.epochs):
+        for epoch in range(self.start_epoch, total_epochs):
+            finetune = epoch >= self.cfg.epochs
+            if finetune and epoch == self.cfg.epochs:
+                # Fresh phase, different loss scale (fine-tune sums TWO
+                # steps' MSE) -- a pretrain-phase best_val_loss would
+                # otherwise block best.pt from ever updating again.
+                self.best_val_loss = float("inf")
+                patience_counter = 0
+
+            loader, vloader, n_future_steps = (
+                (train_loader_2step, val_loader_2step, 2) if finetune
+                else (train_loader, val_loader, 1)
+            )
+
             t0 = time.time()
-            train_loss = self._run_epoch(train_loader, train=True)
-            val_loss = self._run_epoch(val_loader, train=False)
+            train_loss = self._run_epoch(loader, train=True, n_future_steps=n_future_steps)
+            val_loss = self._run_epoch(vloader, train=False, n_future_steps=n_future_steps)
             elapsed = time.time() - t0
 
             self.history["train_loss"].append(train_loss)
@@ -142,7 +201,8 @@ class Trainer:
             self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]["lr"]
 
-            print(f"epoch {epoch:03d} | train {train_loss:.4f} | val {val_loss:.4f} | "
+            phase = "finetune" if finetune else "pretrain"
+            print(f"epoch {epoch:03d} [{phase}] | train {train_loss:.4f} | val {val_loss:.4f} | "
                   f"lr {current_lr:.2e} | {elapsed:.1f}s")
 
             # Always save latest.pt -- this is what auto-resume picks up.

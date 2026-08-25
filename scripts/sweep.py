@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import apply_overrides, derive_run_paths, load_config, resolve_device, save_config_snapshot
+from weather_fno.config import apply_overrides, derive_run_paths, load_config, resolve_device, save_config_snapshot, set_seed
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.models.fno_baseline import build_model
 from weather_fno.training.metrics import lat_weights
@@ -42,6 +42,13 @@ def main():
     args = parser.parse_args()
 
     base_cfg = load_config(args.config)
+    # This loop calls Trainer.fit() directly and never constructs the
+    # 2-step fine-tune loaders (see scripts/train.py) -- force this off
+    # regardless of what --config sets, or fit() would demand loaders
+    # this script never builds. Sweeping architecture/hyperparameters is
+    # this script's job; if you need finetune_epochs swept too, that
+    # support would need adding here first.
+    base_cfg.training.finetune_epochs = 0
     results_path = Path(base_cfg.training.output_dir) / "sweep_results.csv"
     results_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +67,12 @@ def main():
             derive_run_paths(cfg)
             save_config_snapshot(cfg)
             device = resolve_device(cfg.training.device)
+
+            # Same seed by default for every entry (cfg.training.seed
+            # isn't touched by SWEEP_GRID above), so entries only differ
+            # in whatever SWEEP_GRID actually varies, not in weight init
+            # or shuffle order too.
+            set_seed(cfg.training.seed)
 
             # 2. Data pipeline, rebuilt fresh per entry.
             train_ds, val_ds = build_train_val_datasets(cfg.data)

@@ -7,6 +7,9 @@ Usage:
     # Sweeping a few parameters without touching the base config or the
     # code -- a small override file, see configs/experiments/example.yaml:
     python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml
+    # FourCastNet-style 2-step fine-tuning after pretraining -- see
+    # configs/experiments/twostep_finetune.yaml:
+    python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/twostep_finetune.yaml
 """
 
 from __future__ import annotations
@@ -16,7 +19,10 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import load_config, resolve_device, save_config_snapshot
+from weather_fno.config import load_config, resolve_device, save_config_snapshot, set_seed
+from weather_fno.data.climatology import compute_and_save_climatology
+from weather_fno.data.gcs_dataset import MultiStepDataset
+from weather_fno.data.preprocessing import denormalise
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.models.fno_baseline import build_model
 from weather_fno.training.metrics import lat_weights
@@ -37,6 +43,11 @@ def main():
     cfg = load_config(args.config, override_path=args.experiment)
     device = resolve_device(cfg.training.device)
 
+    # Seed before anything that consumes randomness -- model weight init
+    # and DataLoader shuffle order -- so two runs with the same seed are
+    # actually comparable (see set_seed's docstring).
+    set_seed(cfg.training.seed)
+
     # Record exactly what this run used, before training starts, so a
     # downloaded run folder stays self-documenting even if the experiment
     # file or base config later changes.
@@ -48,6 +59,28 @@ def main():
                                shuffle=True, num_workers=cfg.training.num_workers)
     val_loader = DataLoader(val_ds, batch_size=cfg.training.batch_size,
                              shuffle=False, num_workers=cfg.training.num_workers)
+
+    # Climatology baseline for evaluation (inference/evaluate.py) and ACC
+    # (training/metrics.py::lat_weighted_acc) -- computed once here, from
+    # the training split's own data (already fetched above, no extra GCS
+    # cost), and cached so evaluate.py never needs to recompute it. Skips
+    # (with a warning) rather than failing if train_start/train_end don't
+    # span a full year -- see compute_and_save_climatology's docstring.
+    climatology_path = cfg.data.stats_cache_path.replace("normalisation_stats", "climatology")
+    train_physical = denormalise(train_ds.data.numpy(), train_ds.stats)
+    compute_and_save_climatology(train_physical, train_ds.time_values, climatology_path)
+
+    # 2-step fine-tune loaders, only built if actually needed -- reuse
+    # train_ds/val_ds's already-fetched data (MultiStepDataset doesn't
+    # hit GCS itself), just paired 2 steps ahead instead of 1.
+    train_loader_2step = val_loader_2step = None
+    if cfg.training.finetune_epochs > 0:
+        train_loader_2step = DataLoader(MultiStepDataset(train_ds.data, n_future_steps=2),
+                                         batch_size=cfg.training.batch_size,
+                                         shuffle=True, num_workers=cfg.training.num_workers)
+        val_loader_2step = DataLoader(MultiStepDataset(val_ds.data, n_future_steps=2),
+                                       batch_size=cfg.training.batch_size,
+                                       shuffle=False, num_workers=cfg.training.num_workers)
 
     # 3. Model and optimizer.
     model = build_model(cfg.model)
@@ -62,7 +95,7 @@ def main():
     # scale stays readable once loss has dropped enough to flatten the
     # linear plot).
     trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
-    history = trainer.fit(train_loader, val_loader)
+    history = trainer.fit(train_loader, val_loader, train_loader_2step, val_loader_2step)
 
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name)
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss_log.png",

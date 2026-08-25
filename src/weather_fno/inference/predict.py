@@ -30,7 +30,8 @@ def load_inference_data(
     target: InferenceTarget,
     n_timesteps: int = 1,
     start_date: Optional[str] = None,
-) -> np.ndarray:
+    return_time: bool = False,
+):
     """
     Open one inference-time GCS store and build a (T, C, H, W) array
     matching cfg.data.channels, in training channel order.
@@ -47,16 +48,27 @@ def load_inference_data(
             None, the default lands on 1959 -- decades before the training
             window, which mixes up "does this generalise to a new
             resolution" with "does this generalise to a different era".
+        return_time: also return the real timestamps for each row (needed
+            to look up climatology per lead time -- see
+            inference/evaluate.py). False by default so every EXISTING
+            caller keeps working unchanged.
 
     Relative humidity isn't available directly in every store --
     target.derive_relative_humidity switches on deriving it from specific
     humidity + temperature instead (see inference/preprocessing.py).
+
+    Returns:
+        arr (T, C, H, W), or (arr, time_values) if return_time=True --
+        time_values is read from the store directly (not assumed/computed
+        from start_date, which can be None) so it's correct regardless of
+        which timestep the rollout actually started from.
     """
     # 1. Open the store and slice down to just the timesteps needed.
     ds = open_dataset(target.gcs_bucket_path)
     if start_date is not None:
         ds = ds.sel(time=slice(start_date, None))
     ds = ds.isel(time=slice(0, n_timesteps))
+    time_values = ds["time"].values
 
     # 2. Pull each configured channel, deriving relative humidity where needed.
     channel_arrays = []
@@ -78,7 +90,7 @@ def load_inference_data(
     # 3. Stack into (T, C, H, W) and apply this target's own orientation fix.
     arr = np.stack(channel_arrays, axis=1)
     arr = flip_axes_inference(arr, target.flip_lat, target.flip_lon)
-    return arr
+    return (arr, time_values) if return_time else arr
 
 
 def rollout(model, x0: torch.Tensor, n_steps: int, device, target_mode: str = "direct") -> np.ndarray:

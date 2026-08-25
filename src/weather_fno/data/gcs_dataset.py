@@ -122,6 +122,11 @@ class GCSWeatherDataset(Dataset):
             lat_values = lat_values[::-1]
         self.lat_values = lat_values
 
+        # Real calendar timestamps, same row order as self.data below --
+        # needed to know which (day-of-year, hour) each row corresponds to
+        # (see data/climatology.py), which lat_values alone doesn't tell you.
+        self.time_values = ds["time"].values
+
         # 3. Fetch every configured channel and stack into (T, C, H, W).
         print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
         t0 = time.time()
@@ -153,3 +158,27 @@ class GCSWeatherDataset(Dataset):
         x = self.data[idx]
         y = self.data[idx + 1]
         return x, y
+
+
+class MultiStepDataset(Dataset):
+    """
+    Same idea as GCSWeatherDataset, but pairs each timestep with several
+    FUTURE steps instead of just one -- used for FourCastNet-style
+    multi-step fine-tuning (see Trainer._run_epoch's n_future_steps
+    branch). Wraps an already-loaded data tensor (e.g. a
+    GCSWeatherDataset's own .data) rather than fetching anything itself,
+    since it's meant to reuse a dataset that's already been fetched and
+    normalised -- building one costs nothing extra.
+    """
+
+    def __init__(self, data: torch.Tensor, n_future_steps: int):
+        self.data = data
+        self.n_future_steps = n_future_steps
+
+    def __len__(self) -> int:
+        return self.data.shape[0] - self.n_future_steps
+
+    def __getitem__(self, idx: int):
+        x = self.data[idx]
+        y = torch.stack([self.data[idx + i] for i in range(1, self.n_future_steps + 1)])
+        return x, y  # x: (C, H, W), y: (n_future_steps, C, H, W)

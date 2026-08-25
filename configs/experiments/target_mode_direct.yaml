@@ -12,3 +12,12 @@ run_name: "target_mode_direct"
 
 model:
   target_mode: "direct"
+
+training:
+  # Same seed as target_mode_residual.yaml -- both start from identical
+  # weight init and see batches in identical order, so any difference in
+  # results is attributable to target_mode, not to random luck. (Already
+  # baseline_fno.yaml's default; set explicitly here so this file stays
+  # self-documenting on its own.)
+  seed: 42
+  epochs: 200

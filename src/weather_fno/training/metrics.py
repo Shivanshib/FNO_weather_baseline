@@ -69,4 +69,34 @@ def lat_weighted_rmse_per_channel(pred: torch.Tensor, target: torch.Tensor, weig
     return torch.sqrt(mse_per_channel)
 
 
-# TODO: anomaly correlation coefficient (ACC) -- needs a climatology, not built yet.
+def lat_weighted_acc(
+    pred: torch.Tensor, target: torch.Tensor, climatology: torch.Tensor, weights: torch.Tensor
+) -> torch.Tensor:
+    """
+    Anomaly Correlation Coefficient, per channel, latitude-weighted --
+    the (area-weighted) Pearson correlation between the forecast's anomaly
+    (pred - climatology) and the true anomaly (target - climatology).
+    Standard WeatherBench2/FourCastNet convention: 1 = perfect anomaly
+    correlation, 0 = no skill beyond climatology, so it directly answers
+    "is the model adding anything beyond just knowing the season" in a way
+    plain RMSE can't (a model that's just slightly-blurred climatology can
+    still have a low RMSE while having ACC near 0).
+
+    Args:
+        pred, target, climatology: shape (B, C, H, W) -- climatology is
+            THIS forecast's own valid-time climatological field (from
+            data/climatology.py::query_climatology, looked up per lead
+            time before calling this).
+        weights: shape (H,)
+
+    Returns:
+        Tensor of shape (C,), each value in [-1, 1].
+    """
+    w = weights.view(1, 1, -1, 1).to(pred.device)
+    pred_anom = pred - climatology
+    target_anom = target - climatology
+    numerator = (w * pred_anom * target_anom).sum(dim=(0, 2, 3))
+    denominator = torch.sqrt(
+        (w * pred_anom ** 2).sum(dim=(0, 2, 3)) * (w * target_anom ** 2).sum(dim=(0, 2, 3))
+    )
+    return numerator / denominator

@@ -26,7 +26,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from weather_fno.config import derive_run_paths, load_config, resolve_device
+from weather_fno.config import derive_run_paths, load_config, resolve_device, set_seed
 from weather_fno.data.split import build_train_val_datasets
 from weather_fno.inference.predict import load_inference_data
 from weather_fno.inference.preprocessing import normalise_for_inference
@@ -63,6 +63,11 @@ def build_smoketest_config(base_config_path: str):
     cfg.data.val_start = "2000-02-01"
     cfg.data.val_end = "2000-02-02"
     cfg.training.epochs = 2
+    # This script builds/calls Trainer directly and never constructs the
+    # 2-step fine-tune loaders (see scripts/train.py) -- force this off
+    # regardless of what --config sets, or fit() would demand loaders
+    # this script never builds.
+    cfg.training.finetune_epochs = 0
     # NOT overriding device/num_workers -- validating those on THIS
     # machine is the whole point of this script.
 
@@ -86,6 +91,7 @@ def main():
 
     with step("load config"):
         cfg = build_smoketest_config(args.config)
+        set_seed(cfg.training.seed)
 
     with step(f"resolve device (configured: {cfg.training.device})"):
         device = resolve_device(cfg.training.device)

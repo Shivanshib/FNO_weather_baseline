@@ -69,6 +69,62 @@ def lat_weighted_rmse_per_channel(pred: torch.Tensor, target: torch.Tensor, weig
     return torch.sqrt(mse_per_channel)
 
 
+# Signed latitude bands (degrees, ascending) rather than |lat| bands --
+# hemispheres genuinely differ (e.g. storm tracks, land/ocean fraction),
+# so folding them together would hide asymmetries. Degree-based, not
+# equal-row-count, so bands mean the same physical thing regardless of
+# which target grid (64x32 coarse, 240x121, 1440x721 native) they're
+# applied to.
+DEFAULT_LAT_BAND_EDGES = (-90, -60, -20, 20, 60, 90)
+DEFAULT_LAT_BAND_LABELS = ("60S-90S", "20S-60S", "20S-20N", "20N-60N", "60N-90N")
+
+
+def lat_banded_rmse_per_channel(
+    pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor, lat_values: np.ndarray,
+    band_edges=DEFAULT_LAT_BAND_EDGES,
+) -> np.ndarray:
+    """
+    Same lat-weighted RMSE as lat_weighted_rmse_per_channel, computed
+    separately WITHIN each latitude band instead of pooled over the whole
+    globe. A single global RMSE can't tell you whether error is spread
+    evenly or concentrated at the poles / in the tropics -- this does.
+
+    Args:
+        pred, target: shape (B, C, H, W)
+        weights: shape (H,), from lat_weights() -- the usual per-row
+            cos(latitude) area weight, applied within each band instead
+            of globally (so within-band weighting is still correct even
+            though the band itself isn't area-equal).
+        lat_values: shape (H,), real latitude in degrees for each row of
+            pred/target, same row order as weights.
+        band_edges: ascending degree boundaries defining len(band_edges)-1
+            bands (default DEFAULT_LAT_BAND_EDGES/LABELS above).
+
+    Returns:
+        np.ndarray shape (n_bands, C). A band with no rows in lat_values
+        (e.g. too few latitude rows for this grid to hit every band) is
+        NaN there rather than raising.
+    """
+    n_bands = len(band_edges) - 1
+    n_channels = pred.shape[1]
+    out = np.full((n_bands, n_channels), np.nan, dtype=np.float32)
+    for b in range(n_bands):
+        lo, hi = band_edges[b], band_edges[b + 1]
+        # Last band is inclusive at both ends so lat=90 isn't dropped;
+        # every other band is half-open to avoid double-counting a row
+        # that sits exactly on a shared boundary.
+        if b == n_bands - 1:
+            mask = (lat_values >= lo) & (lat_values <= hi)
+        else:
+            mask = (lat_values >= lo) & (lat_values < hi)
+        if not mask.any():
+            continue
+        mask_t = torch.from_numpy(mask)
+        out[b] = lat_weighted_rmse_per_channel(pred[:, :, mask_t], target[:, :, mask_t],
+                                                weights[mask_t]).numpy()
+    return out
+
+
 def lat_weighted_acc(
     pred: torch.Tensor, target: torch.Tensor, climatology: torch.Tensor, weights: torch.Tensor
 ) -> torch.Tensor:

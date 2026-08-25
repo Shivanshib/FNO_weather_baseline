@@ -52,21 +52,58 @@ def recentre_longitude(*fields: np.ndarray, lon: np.ndarray) -> tuple:
     return (*recentred_fields, lon_shifted[order])
 
 
-def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bool = False) -> None:
-    """Train/val loss vs epoch. log_scale=True is useful once loss has
-    dropped enough that the linear plot flattens out."""
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(history["train_loss"], label="train", color=cm.viridis(0.2))
-    ax.plot(history["val_loss"], label="val", color=cm.viridis(0.7))
+def _plot_loss_panel(ax, epochs, train_loss, val_loss, label: str, log_scale: bool) -> None:
+    ax.plot(epochs, train_loss, label="train", color=cm.viridis(0.2))
+    ax.plot(epochs, val_loss, label="val", color=cm.viridis(0.7))
     ax.set_xlabel("epoch")
     ax.set_ylabel("lat-weighted MSE")
-    title = f"Training history {run_name}".strip()
+    ax.set_title(label)
     if log_scale:
         ax.set_yscale("log")
-        title += " (log scale)"
-    ax.set_title(title)
     ax.legend()
     ax.grid(alpha=0.3, which="both" if log_scale else "major")
+
+
+def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bool = False,
+                  pretrain_epochs: Optional[int] = None) -> None:
+    """
+    Train/val loss vs epoch. log_scale=True is useful once loss has
+    dropped enough that the linear plot flattens out.
+
+    pretrain_epochs (cfg.training.epochs): if given AND history actually
+    contains epochs past it (i.e. fine-tuning ran), splits into two
+    side-by-side panels -- pretrain and fine-tune -- instead of one
+    continuous line. This isn't just cosmetic: fine-tuning sums TWO
+    steps' loss (Trainer._run_epoch's n_future_steps branch) while
+    pretraining logs a single step's loss, so the two phases are on
+    genuinely different scales and a shared axis makes fine-tuning's own
+    (real, meaningful) progress within its own phase hard to read once
+    it's dwarfed by the jump at the boundary. Omit (or leave None) to get
+    the old single-panel behaviour -- e.g. smoke_test.py's runs, which
+    force finetune_epochs=0 and so never have a boundary to split on.
+    """
+    train_loss, val_loss = history["train_loss"], history["val_loss"]
+    n_epochs = len(train_loss)
+    split = pretrain_epochs is not None and n_epochs > pretrain_epochs
+
+    title = f"Training history {run_name}".strip()
+    if log_scale:
+        title += " (log scale)"
+
+    if not split:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        _plot_loss_panel(ax, range(n_epochs), train_loss, val_loss, "", log_scale)
+        fig.suptitle(title)
+    else:
+        fig, (ax_pre, ax_fine) = plt.subplots(1, 2, figsize=(13, 4))
+        pre_epochs = range(pretrain_epochs)
+        fine_epochs = range(pretrain_epochs, n_epochs)
+        _plot_loss_panel(ax_pre, pre_epochs, train_loss[:pretrain_epochs],
+                          val_loss[:pretrain_epochs], "pretrain (1-step)", log_scale)
+        _plot_loss_panel(ax_fine, fine_epochs, train_loss[pretrain_epochs:],
+                          val_loss[pretrain_epochs:], "fine-tune (2-step, summed loss)", log_scale)
+        fig.suptitle(title)
+        fig.tight_layout()
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")

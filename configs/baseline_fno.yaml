@@ -73,9 +73,11 @@ model:
 
 training:
   batch_size: 32
-  learning_rate: 1.0e-3
+  # ℓ1 in the FourCastNet paper's own recipe -- pretraining's peak LR.
+  learning_rate: 5.0e-4
   weight_decay: 1.0e-5
-  epochs: 150
+  # Pretrain epoch count, matching the paper's own recipe.
+  epochs: 80
   num_workers: 4
   device: "cuda"  # falls back to cpu automatically if unavailable
 
@@ -88,15 +90,27 @@ training:
   # FourCastNet-style 2-step fine-tuning after the `epochs` above -- a
   # FIXED part of this project's training recipe now, not an axis to
   # compare with/without, so it lives here rather than per-experiment
-  # (every experiment inherits it unless it explicitly overrides
-  # finetune_epochs itself). See configs/experiments/twostep_finetune.yaml
-  # and Trainer._run_epoch's n_future_steps branch.
+  # (every experiment inherits it unless it explicitly overrides these
+  # fields itself). See configs/experiments/twostep_finetune.yaml and
+  # Trainer._run_epoch's n_future_steps branch.
+  #
+  # Fine-tuning gets its OWN fresh cosine schedule (Trainer.
+  # _start_finetune_phase), restarting at finetune_learning_rate -- NOT a
+  # continuation of the pretrain curve. finetune_learning_rate is ℓ2 in
+  # the paper's recipe: 5x lower peak than pretrain's ℓ1 above, since
+  # fine-tuning is a delicate adjustment on an already-trained model, not
+  # training from scratch. REQUIRED once finetune_epochs > 0 -- raises at
+  # config-load time if missing (config.py::_validate_finetune_lr).
   finetune_epochs: 50
+  finetune_learning_rate: 1.0e-4
 
-  # CosineAnnealingLR: decays the LR from learning_rate down to min_lr
+  # Pretrain's CosineAnnealingLR: decays learning_rate down to min_lr
   # over lr_scheduler_t_max epochs (null = defaults to `epochs`, so the
-  # curve spans the whole run). Scheduled, not reactive to val loss.
+  # curve spans the whole pretrain budget). Scheduled, not reactive to
+  # val loss. finetune_lr_scheduler_t_max is the fine-tune phase's own
+  # equivalent (null = defaults to finetune_epochs).
   lr_scheduler_t_max: null
+  finetune_lr_scheduler_t_max: null
   min_lr: 1.0e-6
 
   # Stop once val loss hasn't improved for this many epochs. Kept

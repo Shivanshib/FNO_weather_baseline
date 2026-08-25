@@ -99,9 +99,10 @@ def main():
     trainer = Trainer(model, optimizer, cfg.training, weights, device, target_mode=cfg.model.target_mode)
     history = trainer.fit(train_loader, val_loader, train_loader_2step, val_loader_2step)
 
-    plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name)
+    plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss.png", cfg.run_name,
+                 pretrain_epochs=cfg.training.epochs)
     plot_history(history, f"{cfg.training.plot_dir}/{cfg.run_name}_loss_log.png",
-                 cfg.run_name, log_scale=True)
+                 cfg.run_name, log_scale=True, pretrain_epochs=cfg.training.epochs)
 
 
 if __name__ == "__main__":

@@ -85,10 +85,10 @@ class TrainingConfig:
     checkpoint_dir: str = ""
     plot_dir: str = ""
     log_dir: str = ""
-    # CosineAnnealingLR: decays learning_rate down to min_lr along a
-    # cosine curve over lr_scheduler_t_max epochs (None = default to
-    # `epochs`, so the decay spans the whole run). Scheduled, not reactive
-    # to val loss like ReduceLROnPlateau.
+    # Pretrain's CosineAnnealingLR: decays learning_rate down to min_lr
+    # over lr_scheduler_t_max epochs (None = default to `epochs`, so the
+    # decay spans the whole pretrain budget). Scheduled, not reactive to
+    # val loss like ReduceLROnPlateau.
     lr_scheduler_t_max: Optional[int] = None
     min_lr: float = 1.0e-6
     # Seeds model weight init and DataLoader shuffle order (see
@@ -103,11 +103,21 @@ class TrainingConfig:
     # additional epochs on a 2-step autoregressive rollout instead (model
     # predicts x(k+1) from x(k), then x(k+2) from its OWN x(k+1)
     # prediction, loss = sum of both steps' errors against their real
-    # ground truth) -- see Trainer.fit()/_run_epoch(). The LR schedule
-    # spans epochs + finetune_epochs as one continuous cosine curve, so
-    # fine-tuning continues at an already-low, still-decaying LR rather
-    # than jumping to a separate one.
+    # ground truth) -- see Trainer.fit()/_run_epoch().
+    #
+    # Fine-tuning gets its OWN fresh CosineAnnealingLR (Trainer's
+    # _start_finetune_phase), NOT a continuation of the pretrain curve --
+    # matching the FourCastNet paper's own recipe, where fine-tuning
+    # restarts at a lower peak LR rather than picking up wherever pretrain
+    # left off. finetune_learning_rate is REQUIRED once finetune_epochs >
+    # 0 (validated at config-load time, config.py::_validate_finetune_lr)
+    # -- deliberately not defaulted, since what to restart fine-tuning at
+    # is a real methodological choice, not something to leave implicit.
+    # finetune_lr_scheduler_t_max works exactly like lr_scheduler_t_max,
+    # just for this second schedule (None = default to finetune_epochs).
     finetune_epochs: int = 0
+    finetune_learning_rate: Optional[float] = None
+    finetune_lr_scheduler_t_max: Optional[int] = None
 
 
 @dataclass
@@ -277,6 +287,20 @@ def _validate_target_mode(cfg: Config) -> None:
         )
 
 
+def _validate_finetune_lr(cfg: Config) -> None:
+    """training.finetune_learning_rate must be set once finetune_epochs >
+    0 -- fine-tuning restarts with its OWN fresh cosine schedule (see
+    Trainer._start_finetune_phase), so what to restart it at is a real
+    methodological choice, not something to leave to a silent default."""
+    if cfg.training.finetune_epochs > 0 and cfg.training.finetune_learning_rate is None:
+        raise ValueError(
+            "training.finetune_epochs > 0 requires training.finetune_learning_rate to "
+            "also be set -- fine-tuning uses its own fresh cosine schedule, starting at "
+            "this LR (FourCastNet's own recipe uses a lower peak LR for fine-tuning than "
+            "pretraining, e.g. 1/5th), not a value chosen for you."
+        )
+
+
 def save_config_snapshot(cfg: Config) -> None:
     """
     Write the fully-resolved config (every hyperparameter, every derived
@@ -347,5 +371,6 @@ def load_config(path: "str | os.PathLike", override_path: "str | os.PathLike | N
     # 5. Catch likely config mistakes now, not deep inside a training run.
     _validate_n_modes(cfg)
     _validate_target_mode(cfg)
+    _validate_finetune_lr(cfg)
 
     return cfg

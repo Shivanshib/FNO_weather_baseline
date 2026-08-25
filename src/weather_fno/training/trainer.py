@@ -5,22 +5,28 @@ stopping, and (optionally) FourCastNet-style 2-step fine-tuning.
 fit() does this every epoch:
   1. one gradient-descent pass over train (lat-weighted MSE)
   2. one no-grad pass over val (same loss, no weight updates)
-  3. step the CosineAnnealingLR scheduler (decays LR every epoch on a
-     fixed curve, unlike ReduceLROnPlateau which reacts to val loss)
+  3. step whichever CosineAnnealingLR schedule is active for this epoch's
+     phase (decays LR every epoch on a fixed curve, unlike
+     ReduceLROnPlateau which reacts to val loss)
   4. save latest.pt unconditionally
   5. if val loss improved, also save best.pt and reset the early-stopping
      counter; otherwise count towards early_stopping_patience
 
-The first cfg.epochs epochs are plain single-step training. If
+The first cfg.epochs epochs are plain single-step pretraining, using its
+own CosineAnnealingLR (base LR = cfg.learning_rate). If
 cfg.finetune_epochs > 0, cfg.finetune_epochs MORE epochs follow after
 that, training on a 2-step autoregressive rollout instead (see
-_run_epoch's n_future_steps branch) -- both phases share one continuous
-epoch counter and one LR schedule, so auto-resume works the same way
-across the whole run, pretrain or fine-tune, no separate state needed.
+_run_epoch's n_future_steps branch) -- matching FourCastNet's own recipe,
+fine-tuning gets its OWN fresh CosineAnnealingLR (base LR =
+cfg.finetune_learning_rate, typically lower than pretrain's), not a
+continuation of the pretrain curve. Both phases still share one
+continuous epoch counter for checkpointing/resume purposes -- only the
+LR schedule itself is genuinely two separate curves.
 
 Auto-resume happens in __init__: if latest.pt already exists, training
-picks up from there automatically, so rerunning the same command is
-always safe.
+picks up from there automatically (in whichever phase it left off in,
+replaying the CORRECT schedule for that phase), so rerunning the same
+command is always safe.
 """
 
 from __future__ import annotations
@@ -52,16 +58,21 @@ class Trainer:
         self.device = device
         self.target_mode = target_mode
 
-        # T_max defaults to the full epoch budget -- pretrain PLUS
-        # fine-tune, so the cosine curve reaches min_lr right at the end
-        # of the whole run (fine-tuning continues the same decaying
-        # curve, not a separate schedule).
-        t_max = cfg.lr_scheduler_t_max or (cfg.epochs + cfg.finetune_epochs)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=t_max,
-            eta_min=cfg.min_lr,
+        # Pretrain's own CosineAnnealingLR, built now -- BEFORE
+        # load_checkpoint touches the optimizer's lr below -- so its
+        # base_lrs are captured as cfg.learning_rate regardless of
+        # whatever gets restored later (same reasoning as the resume
+        # comment further down).
+        pretrain_t_max = cfg.lr_scheduler_t_max or cfg.epochs
+        self.pretrain_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=pretrain_t_max, eta_min=cfg.min_lr,
         )
+        # The fine-tune schedule can't be built yet -- it needs the
+        # optimizer's lr freshly reset to cfg.finetune_learning_rate first
+        # (see _start_finetune_phase), which must happen exactly once, at
+        # the real phase transition -- either fresh in fit(), or here on
+        # a resume that lands directly in the fine-tune phase.
+        self.finetune_scheduler = None
 
         self.history = {"train_loss": [], "val_loss": []}
         self.start_epoch = 0
@@ -86,8 +97,9 @@ class Trainer:
             self.best_val_loss = ckpt["best_val_loss"]
             self.history = ckpt["history"]
 
-            # Replaying the scheduler correctly on resume is trickier than
-            # it looks -- two things matter here:
+            # Replaying a scheduler correctly on resume is trickier than
+            # it looks -- two things matter here, verified directly (not
+            # just reasoned about -- see CODE_REFERENCE.md):
             #   1. Use the CLOSED-FORM scheduler.step(epoch=...), not a
             #      loop of bare step() calls. Bare step() computes the
             #      next LR from the OPTIMIZER'S CURRENT lr, which
@@ -96,18 +108,62 @@ class Trainer:
             #      never recovers. The closed form recomputes purely from
             #      epoch count and this run's own base_lrs instead, so
             #      it's unaffected by whatever lr got loaded.
-            #   2. Use ckpt["epoch"] + 1, not ckpt["epoch"]. At save time,
-            #      epoch 0..ckpt["epoch"] had each already called .step()
-            #      once, so the scheduler's true position is one step
-            #      further than the saved epoch number.
-            # (Both verified against an uninterrupted reference run --
-            # see CODE_REFERENCE.md. The scheduler.step(epoch=...) form is
-            # soft-deprecated by PyTorch, hence the warning suppression.)
+            #   2. Replay to epoch_index + 1, not epoch_index. At save
+            #      time, epoch 0..epoch_index had each already called
+            #      .step() once, so the scheduler's true position is one
+            #      step further than the saved epoch index.
+            # (The epoch= form is soft-deprecated by PyTorch in favour of
+            # bare step() -- that general advice doesn't apply to this
+            # one-off resume-time replay, hence the warning suppression.)
+            #
+            # Which of the two schedules to replay depends on which phase
+            # start_epoch lands in: <= cfg.epochs means pretraining hasn't
+            # finished a fine-tune epoch yet (pretrain_scheduler is still
+            # the relevant one, if it'll be used again at all -- harmless
+            # even in the exact-boundary case where it won't be, since
+            # fit() builds a completely fresh finetune_scheduler there
+            # anyway); anything past that means fine-tuning had already
+            # started, so finetune_scheduler needs building AND replaying
+            # to its own relative position within the fine-tune phase.
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*")
                 warnings.filterwarnings("ignore", message=".*epoch parameter.*")
-                self.scheduler.step(ckpt["epoch"] + 1)
+                if self.start_epoch <= cfg.epochs:
+                    self.pretrain_scheduler.step(ckpt["epoch"] + 1)
+                else:
+                    self._start_finetune_phase()
+                    relative_epoch = ckpt["epoch"] - cfg.epochs
+                    self.finetune_scheduler.step(relative_epoch + 1)
             print(f"Resumed from checkpoint at epoch {ckpt['epoch']}")
+
+    def _start_finetune_phase(self) -> None:
+        """
+        Switches the optimizer over to the fine-tune phase's own base LR
+        and builds its own fresh CosineAnnealingLR -- NOT a continuation
+        of the pretrain schedule, matching the FourCastNet paper's own
+        recipe (fine-tuning restarts at a lower peak LR, rather than
+        picking up wherever pretraining's decay left off).
+
+        Must be called exactly once, right when the fine-tune phase
+        begins -- either a fresh transition inside fit(), or (in
+        __init__) a resume that lands directly in the fine-tune phase.
+
+        Explicitly clears any stale `initial_lr` left on the optimizer's
+        param groups by the pretrain scheduler -- PyTorch's scheduler
+        base class reuses an existing `initial_lr` if one is already
+        present instead of recomputing it from the CURRENT lr, which
+        would otherwise make this "fresh" schedule silently decay from
+        pretrain's OLD base LR instead of finetune_learning_rate.
+        Verified directly (not assumed) that clearing it first is what
+        makes this correct -- see CODE_REFERENCE.md.
+        """
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.cfg.finetune_learning_rate
+            group.pop("initial_lr", None)
+        finetune_t_max = self.cfg.finetune_lr_scheduler_t_max or self.cfg.finetune_epochs
+        self.finetune_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=finetune_t_max, eta_min=self.cfg.min_lr,
+        )
 
     def _run_epoch(self, loader: DataLoader, train: bool, n_future_steps: int = 1) -> float:
         """
@@ -184,6 +240,12 @@ class Trainer:
                 # otherwise block best.pt from ever updating again.
                 self.best_val_loss = float("inf")
                 patience_counter = 0
+                if self.finetune_scheduler is None:
+                    # Fresh transition within THIS process (as opposed to
+                    # having resumed directly into fine-tuning, where
+                    # __init__ already built it) -- switch the optimizer
+                    # over to finetune_learning_rate now.
+                    self._start_finetune_phase()
 
             loader, vloader, n_future_steps = (
                 (train_loader_2step, val_loader_2step, 2) if finetune
@@ -203,9 +265,11 @@ class Trainer:
             # checkpoints saved before this field existed.
             self.history.setdefault("epoch_time_seconds", []).append(elapsed)
 
-            # Cosine schedule moves every epoch on its fixed curve --
-            # unlike ReduceLROnPlateau, it takes no val_loss argument.
-            self.scheduler.step()
+            # Step whichever schedule is active for this epoch's phase --
+            # moves every epoch on its fixed curve, unlike
+            # ReduceLROnPlateau which takes a val_loss argument.
+            scheduler = self.finetune_scheduler if finetune else self.pretrain_scheduler
+            scheduler.step()
             current_lr = self.optimizer.param_groups[0]["lr"]
 
             phase = "finetune" if finetune else "pretrain"

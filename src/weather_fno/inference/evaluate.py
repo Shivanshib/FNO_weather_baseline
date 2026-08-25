@@ -26,7 +26,13 @@ from weather_fno.data.io import open_dataset
 from weather_fno.data.preprocessing import denormalise
 from weather_fno.inference.predict import load_inference_data, load_trained_model, rollout
 from weather_fno.inference.preprocessing import normalise_for_inference
-from weather_fno.training.metrics import lat_weighted_acc, lat_weighted_rmse_per_channel, lat_weights
+from weather_fno.training.metrics import (
+    DEFAULT_LAT_BAND_LABELS,
+    lat_banded_rmse_per_channel,
+    lat_weighted_acc,
+    lat_weighted_rmse_per_channel,
+    lat_weights,
+)
 
 
 def get_target_lat_lon(cfg: Config, target: InferenceTarget):
@@ -49,6 +55,7 @@ def evaluate_target(
     model,
     train_stats: Dict[str, np.ndarray],
     weights: torch.Tensor,
+    lat_values: np.ndarray,
     device,
     climatology: Optional[dict] = None,
 ) -> dict:
@@ -57,7 +64,10 @@ def evaluate_target(
     for `target`, run the autoregressive rollout, and score it against
     ground truth AND a persistence baseline (repeat the initial condition
     unchanged -- the standard "is the model better than doing nothing"
-    check) at every lead time, per channel.
+    check) at every lead time, per channel, AND per latitude band
+    (training/metrics.py::lat_banded_rmse_per_channel) within each channel
+    -- global-per-channel RMSE can look fine while hiding error that's
+    actually concentrated at the poles or in the tropics.
 
     climatology (optional, from data/climatology.py::compute_climatology
     or its cached .npz, coarse-grid only -- see that module's docstring
@@ -68,9 +78,10 @@ def evaluate_target(
     not plotting them, not by erroring.
 
     Returns a dict with lead_hours, model_rmse (n_steps, C),
-    persistence_rmse (n_steps, C), rollout_time_seconds (a scalar -- the
-    n_steps forward passes only, not the data fetch or scoring around it,
-    so it's directly comparable across different model architectures),
+    persistence_rmse (n_steps, C), model_rmse_banded (n_steps, n_bands, C),
+    lat_band_labels (n_bands, strings), rollout_time_seconds (a scalar --
+    the n_steps forward passes only, not the data fetch or scoring around
+    it, so it's directly comparable across different model architectures),
     optionally climatology_rmse (n_steps, C) and model_acc (n_steps, C),
     plus the in-memory arrays needed for plotting (initial_condition,
     forecast, ground_truth -- physical units).
@@ -110,7 +121,9 @@ def evaluate_target(
 
     # 3. Score model AND persistence against ground truth, per lead time.
     n_channels = len(cfg.data.channels)
+    n_bands = len(DEFAULT_LAT_BAND_LABELS)
     model_rmse = np.zeros((n_steps, n_channels), dtype=np.float32)
+    model_rmse_banded = np.zeros((n_steps, n_bands, n_channels), dtype=np.float32)
     persistence_rmse = np.zeros((n_steps, n_channels), dtype=np.float32)
     climatology_rmse = np.zeros((n_steps, n_channels), dtype=np.float32) if climatology is not None else None
     model_acc = np.zeros((n_steps, n_channels), dtype=np.float32) if climatology is not None else None
@@ -126,6 +139,7 @@ def evaluate_target(
         gt_step = torch.from_numpy(ground_truth[step:step + 1]).float()
         pred_step = torch.from_numpy(forecast[step:step + 1]).float()
         model_rmse[step] = lat_weighted_rmse_per_channel(pred_step, gt_step, weights).numpy()
+        model_rmse_banded[step] = lat_banded_rmse_per_channel(pred_step, gt_step, weights, lat_values)
         persistence_rmse[step] = lat_weighted_rmse_per_channel(initial_t, gt_step, weights).numpy()
 
         if climatology is not None:
@@ -136,6 +150,8 @@ def evaluate_target(
     result = {
         "lead_hours": np.arange(1, n_steps + 1) * 6,
         "model_rmse": model_rmse,
+        "model_rmse_banded": model_rmse_banded,
+        "lat_band_labels": np.array(DEFAULT_LAT_BAND_LABELS),
         "persistence_rmse": persistence_rmse,
         "rollout_time_seconds": rollout_time_seconds,
         "initial_condition": initial_condition,
@@ -175,7 +191,7 @@ def run_evaluation(
         lat, _ = get_target_lat_lon(cfg, target)
         weights = lat_weights(lat)
         target_climatology = climatology if target.resolution == cfg.data.resolution else None
-        results[target.name] = evaluate_target(cfg, target, model, train_stats, weights, device,
+        results[target.name] = evaluate_target(cfg, target, model, train_stats, weights, lat, device,
                                                  climatology=target_climatology)
 
         final_model_rmse = results[target.name]["model_rmse"][-1].mean()

@@ -7,7 +7,10 @@ correlation coefficient (ACC) vs lead time, plus forecast-vs-actual map
 plots.
 
 Saves, per target, into cfg.inference.output_dir:
-  {target.name}_eval_metrics.npz       lead_hours, model_rmse, persistence_rmse,
+  {target.name}_eval_metrics.npz       lead_hours, model_rmse, model_rmse_banded
+                                        (per latitude band, see
+                                        training/metrics.py::lat_banded_rmse_per_channel),
+                                        lat_band_labels, persistence_rmse,
                                         + climatology_rmse/model_acc if available
   {target.name}_rmse_vs_lead_time.png  scorecard for a few headline channels
   {target.name}_acc_vs_lead_time.png   ACC scorecard (only for targets with climatology)
@@ -104,6 +107,8 @@ def main():
 
         metrics_path = out_dir / f"{target.name}_eval_metrics.npz"
         metrics_to_save = {"lead_hours": result["lead_hours"], "model_rmse": result["model_rmse"],
+                            "model_rmse_banded": result["model_rmse_banded"],
+                            "lat_band_labels": result["lat_band_labels"],
                             "persistence_rmse": result["persistence_rmse"],
                             "rollout_time_seconds": result["rollout_time_seconds"]}
         if has_climatology:

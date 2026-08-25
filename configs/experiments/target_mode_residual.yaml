@@ -1,0 +1,14 @@
+# One half of a direct-vs-residual comparison (see
+# configs/experiments/target_mode_direct.yaml for the other half).
+# Same architecture as configs/baseline_fno.yaml exactly (no
+# factorization, n_modes [16, 32], hidden_channels 64, n_layers 4) --
+# this file only changes run_name and model.target_mode, so any
+# difference in results between the two runs comes purely from
+# direct-vs-residual prediction, not from some other config difference.
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_residual.yaml
+#   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_residual.yaml --targets coarse
+run_name: "target_mode_residual"
+
+model:
+  target_mode: "residual"

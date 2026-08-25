@@ -1,27 +1,15 @@
-# Baseline FNO configuration
+# Baseline FNO configuration.
 #
-# All paths, hyperparameters and machine-specific settings live here so that
-# moving between machines (cream / vanilla / external compute) never requires
-# touching the code — only this file (or environment variable overrides).
+# All paths, hyperparameters, and machine-specific settings live here, so
+# moving to a different machine should only ever mean editing this file,
+# never the code.
 
 run_name: "fno_baseline_64x32"
 
 data:
-  # PATHS = {
-    #"0.25deg": "gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721.zarr",
-    #"1.5deg":  "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr",
-    #"5.625deg":"gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr",
-#}
+  # Coarse (5.625deg / 64x32) ERA5 store, used for training.
   gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
 
-  # The 20 prognostic variables used in FourCastNet (Pathak et al. 2022,
-  # Table 1), in the model's standard channel order. Each entry gives the
-  # ERA5/CDS variable name and pressure level (level: null = single-level
-  # surface field, so no .sel(level=...) is applied).
-
-  # schema — naming can vary slightly between processing pipelines (e.g.
-  # "geopotential" vs "z", "total_column_water_vapour" vs "tcwv") even when
-  # the underlying physical field is identical.
   channels:
     - {short_name: u10,   name: 10m_u_component_of_wind,   level: null}  # surface
     - {short_name: v10,   name: 10m_v_component_of_wind,   level: null}  # surface
@@ -44,56 +32,43 @@ data:
     - {short_name: r850,  name: relative_humidity,         level: 850}
     - {short_name: tcwv,  name: total_column_water_vapour, level: null}  # integrated
 
-  resolution: [64, 32]          # (lon, lat) grid size for training data
-
-
+  resolution: [64, 32]  # (lon, lat) grid size for training data
   lat_dim: "latitude"
   lon_dim: "longitude"
 
-  # Orientation corrections — separate from axis ORDER (handled above by
-  # name). This is about which direction the axis runs. CONFIRMED against
-  # the real store (2026-08-09): this coarse/1.5deg conservative-regridded
-  # store has latitude stored ASCENDING (-87.19 -> 87.19), unlike the raw
-  # ERA5 archive convention — so it needs NO flip, unlike what was
-  # originally guessed here.
+  # Orientation, not axis order (order is handled by name, see data/gcs_dataset.py).
+  # This store has latitude stored ascending, so no flip needed here.
   flip_lat: false
   flip_lon: false
 
-  # Time-based split — no random shuffling across time (avoids leakage
-  # between adjacent, highly correlated timesteps).
+  # Time-based split, not random -- avoids leaking information between
+  # adjacent, highly correlated timesteps.
   train_start: "2000-01-01"
   train_end: "2014-12-31"
   val_start: "2015-01-01"
   val_end: "2016-12-31"
 
-  # Normalisation stats are computed once from the training split, cached,
-  # and reused for inference later -- but NOT set here. stats_cache_path
-  # is always auto-derived from run_name (outputs/{run_name}/stats/...),
-  # so every run's stats live alongside that run's own checkpoints/plots,
-  # never shared or overwritten across different runs -- see
-  # config.py::derive_run_paths.
+  # stats_cache_path is NOT set here -- always auto-derived from run_name
+  # (outputs/{run_name}/stats/...), see config.py::derive_run_paths.
 
 model:
   in_channels: 20
   out_channels: 20
-  n_modes: [16, 32]              # (lat modes, lon modes) — matches the model's
-                                  # (H, W) tensor axis order, the REVERSE of the
-                                  # lon x lat convention used for `resolution`
-                                  # above. Nyquist ceiling: H=32 -> max 16,
-                                  # W=64 -> max 32. At the ceiling for a
-                                  # baseline since the coarse field is smooth;
-                                  # back off if you see instability.
+  # (lat modes, lon modes) -- the model's (H, W) axis order, the REVERSE
+  # of resolution's (lon, lat) above. Nyquist ceiling for this grid:
+  # H=32 -> max 16, W=64 -> max 32. Already at the ceiling here; back off
+  # if training is unstable.
+  n_modes: [16, 32]
   hidden_channels: 64
   n_layers: 4
-  # TFNO option — leave off (null) for the baseline, see project notes on
-  # when this is worth switching on. Set factorization: "tucker" and a rank
-  # in (0, 1] to compress the spectral weights via low-rank tensor factors.
+  # TFNO compression -- leave both null for a plain dense FNO (the
+  # baseline). Set factorization: "tucker" and a rank in (0, 1] to switch on.
   factorization: null
   rank: null
-  # "direct" (default, baseline): the model predicts the full next state
-  # u(t+6h) outright. "residual": the model predicts the delta
-  # du = u(t+6h) - u(t) instead -- switch via configs/experiments/, e.g.
-  # configs/experiments/residual_target.yaml, not by editing this file.
+  # "direct" (baseline): predicts the full next state u(t+6h) outright.
+  # "residual": predicts the delta du = u(t+6h) - u(t) instead. Switch via
+  # an experiment override (configs/experiments/residual_target.yaml),
+  # not by editing this file.
   target_mode: "direct"
 
 training:
@@ -102,79 +77,52 @@ training:
   weight_decay: 1.0e-5
   epochs: 150
   num_workers: 4
-  device: "cuda"                 # falls back to cpu automatically if unavailable
+  device: "cuda"  # falls back to cpu automatically if unavailable
 
-  # CosineAnnealingLR: smoothly decays the LR from learning_rate above
-  # down to min_lr along a cosine curve over lr_scheduler_t_max epochs
-  # (null = defaults to `epochs` above, so the curve spans the whole
-  # training budget). Scheduled, not reactive to val loss -- unlike
-  # ReduceLROnPlateau it moves every epoch on a fixed schedule regardless
-  # of whether that epoch actually improved.
+  # CosineAnnealingLR: decays the LR from learning_rate down to min_lr
+  # over lr_scheduler_t_max epochs (null = defaults to `epochs`, so the
+  # curve spans the whole run). Scheduled, not reactive to val loss.
   lr_scheduler_t_max: null
   min_lr: 1.0e-6
 
-  # Plain safety net, independent of the LR schedule now (the cosine
-  # curve itself doesn't react to plateaus) -- stop once val loss hasn't
-  # improved for this many epochs. Kept generous since progress is
-  # expected to be genuinely slower, not just plateaued, once the cosine
-  # curve is deep into its tail and the LR is small.
+  # Stop once val loss hasn't improved for this many epochs. Kept
+  # generous since progress genuinely slows (not just plateaus) once the
+  # cosine curve is deep into its tail.
   early_stopping_patience: 25
 
-  # The one shared, un-namespaced root across every run -- machine-specific
-  # (e.g. point at a quota-safe disk on a particular GPU node), never
-  # run-specific. checkpoint_dir/plot_dir/log_dir are NOT set here -- each
-  # run's are always auto-derived as {output_dir}/{run_name}/checkpoints
-  # etc, so different experiments (different run_name) can never collide
-  # or overwrite each other's outputs -- see config.py::derive_run_paths.
+  # The one shared, un-namespaced root every run's folder sits under
+  # (machine-specific, e.g. point at a quota-safe disk). checkpoint_dir/
+  # plot_dir/log_dir are NOT set here -- always auto-derived per run_name,
+  # see config.py::derive_run_paths.
   output_dir: "outputs"
 
-# Note: there's no `metrics:` section -- training/trainer.py always scores
-# with lat_weighted_mse directly (see training/metrics.py), so a config
-# section for it was never actually read anywhere and has been removed.
-# Additional metrics (RMSE, per-channel breakdowns) already exist in
-# training/metrics.py and get used directly by inference/evaluate.py
-# instead, since that's where per-channel/lead-time reporting actually
-# happens -- not during training.
+# No `metrics:` section -- training always scores with lat_weighted_mse
+# directly (training/metrics.py); per-channel/lead-time metrics are
+# computed separately, after training, by inference/evaluate.py.
 
 inference:
   # checkpoint_path/output_dir are NOT set here -- always auto-derived
-  # from run_name (checkpoint_path -> this run's own checkpoints/best.pt,
-  # output_dir -> outputs/{run_name}/predictions), so running evaluate.py/
-  # predict_single_variable.py against this same config always picks up
-  # the checkpoint THIS config just trained, never a stale or unrelated
-  # one -- see config.py::derive_run_paths. Point at a different run's
-  # checkpoint by overriding cfg.inference.checkpoint_path in code
-  # afterward (every notebook's RUN FOLDER cell does exactly this).
+  # from run_name, so evaluate.py/predict_single_variable.py always pick
+  # up the checkpoint this same config trained. See config.py::derive_run_paths.
 
   # 1-week forecast at the training cadence (6-hourly) = 28 autoregressive
-  # steps. Change this if you want a shorter/longer forecast horizon.
-  # Shared across every target below — same trained model, same rollout
-  # length, just evaluated on different starting grids.
+  # steps. Shared across every target below -- same model, same rollout
+  # length, different starting grids.
   forecast_lead_steps: 28
 
-  # Shared starting timestep for every target's rollout (not per-target --
-  # confirmed both stores share the same real time index, both starting
-  # 1959-01-01, so one shared date guarantees every target is compared on
-  # identical real timestamps). null (default) = the store's first
-  # available timestep, which is 1959-01-01 -- decades before the training
-  # window (2000-2014) and validation window (2015-2016). For a cleaner
-  # resolution-only comparison (not also testing 65+ years of temporal
-  # generalisation), set an explicit date within/near those windows, e.g.
-  # start_date: "2016-06-01"
+  # Shared starting timestep for every target's rollout, so they're
+  # compared on identical real dates. null (default) = each store's first
+  # available timestep, which for these stores is 1959 -- decades before
+  # the training window. Set an explicit date (e.g. "2016-06-01") for a
+  # fairer resolution-only comparison.
   start_date: null
 
-  # Each target is a separate GCS store to run the SAME trained model on,
-  # autoregressively, with its OWN preprocessing needs — a store's
-  # resolution and its axis-flip/derivation requirements are independent of
-  # each other.
+  # Each target is a separate GCS store to run the same trained model on,
+  # with its own resolution and preprocessing needs.
   targets:
-    # Native full-resolution ERA5 — the store provides specific humidity as
-    # a prognostic variable, not relative humidity, so r500/r850 must be
-    # DERIVED (see inference/preprocessing.py::compute_relative_humidity).
-    # flip_lat CONFIRMED against the real store (2026-08-09): this native
-    # archive-style store has latitude stored DESCENDING (90 -> -90, the
-    # classic ECMWF convention), unlike the coarse/resampled stores below —
-    # so it needs a flip, the opposite of what was originally guessed here.
+    # Native full-resolution ERA5. Only provides specific humidity, so
+    # r500/r850 must be DERIVED (inference/preprocessing.py). Latitude is
+    # stored descending here (the classic ECMWF convention), so it needs a flip.
     - name: "native_highres"
       gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-wb13-6h-1440x721.zarr"
       resolution: [1440, 721]
@@ -182,12 +130,9 @@ inference:
       flip_lon: false
       derive_relative_humidity: true
 
-    # 1.5deg resampled store — laid out like the coarse training store
-    # (same conservative-regridding pipeline), so relative_humidity is
-    # available directly. flip_lat CONFIRMED against the real store
-    # (2026-08-09): ascending (-90 -> 90), like the coarse training store,
-    # so it needs NO flip — the opposite of what was originally guessed
-    # here.
+    # 1.5deg resampled store, same regridding pipeline as the coarse
+    # training store -- relative_humidity available directly, ascending
+    # latitude, no flip needed.
     - name: "1p5deg"
       gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr"
       resolution: [240, 121]
@@ -195,14 +140,9 @@ inference:
       flip_lon: false
       derive_relative_humidity: false
 
-    # The SAME store/resolution used for training -- an in-distribution
-    # reference point. Since the model has genuinely seen this exact
-    # resolution during training, inference here shows what performance
-    # looks like with NO resolution-generalisation gap at all, for direct
-    # comparison against native_highres/1p5deg above. Same store as
-    # data.gcs_bucket_path, so flip_lat/flip_lon/derive_relative_humidity
-    # match data's settings (confirmed ascending, no flip, RH available
-    # directly) rather than being independently re-verified.
+    # Same store/resolution as training -- an in-distribution reference
+    # point, showing performance with no resolution-generalisation gap at
+    # all, for comparison against native_highres/1p5deg above.
     - name: "coarse"
       gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
       resolution: [64, 32]

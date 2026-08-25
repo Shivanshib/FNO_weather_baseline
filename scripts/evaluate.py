@@ -15,6 +15,9 @@ Usage:
     # to that run, not the base config's own -- see
     # configs/experiments/example.yaml.
     python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/example.yaml
+    # Restrict to specific inference targets (by name, from --config's
+    # inference.targets), e.g. only the coarse (in-distribution) grid:
+    python scripts/evaluate.py --config configs/baseline_fno.yaml --targets coarse
 """
 
 from __future__ import annotations
@@ -42,9 +45,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/baseline_fno.yaml")
     parser.add_argument("--experiment", type=str, default=None)
+    # Restrict evaluation to a subset of inference.targets by name (e.g.
+    # just "coarse"), instead of every target configured in --config.
+    parser.add_argument("--targets", type=str, nargs="+", default=None)
     args = parser.parse_args()
 
     cfg = load_config(args.config, override_path=args.experiment)
+
+    if args.targets is not None:
+        available = {t.name for t in cfg.inference.targets}
+        unknown = set(args.targets) - available
+        if unknown:
+            raise ValueError(f"--targets {sorted(unknown)} not found. Available: {sorted(available)}")
+        cfg.inference.targets = [t for t in cfg.inference.targets if t.name in args.targets]
 
     # 1. Load the exact normalisation stats the training run fit -- never
     # re-fit stats on inference/eval data.

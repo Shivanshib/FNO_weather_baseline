@@ -47,6 +47,15 @@ class DataConfig:
     # name instead of assuming a fixed position.
     lat_dim: str = "latitude"
     lon_dim: str = "longitude"
+    # True for a training store that doesn't provide relative_humidity
+    # directly (e.g. native-resolution ERA5, which only has specific
+    # humidity) -- routes every relative_humidity channel through
+    # data/preprocessing.py::compute_relative_humidity instead (see
+    # data/gcs_dataset.py::_select_channels). False (default) for the
+    # coarse baseline store and the 1.5deg store, both of which already
+    # provide it directly, same as InferenceTarget's own field of the
+    # same name/purpose for inference-time stores.
+    derive_relative_humidity: bool = False
 
 
 @dataclass

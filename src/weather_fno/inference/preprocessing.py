@@ -1,10 +1,11 @@
 """
-Preprocessing specific to inference-time data. The one real difference
-from training data: some inference stores don't provide relative humidity
-directly, so it has to be derived from specific humidity + temperature.
-Axis-flip and normalisation are just thin wrappers around
-data/preprocessing.py -- no need to duplicate those, they work the same
-regardless of where the array came from.
+Preprocessing specific to inference-time data. Axis-flip, normalisation,
+and relative-humidity derivation are just thin re-exports of
+data/preprocessing.py (relative humidity derivation moved there once
+TRAINING gained the same need -- see gcs_dataset.py -- not just inference)
+-- no need to duplicate those, they work the same regardless of where the
+array came from. Kept importable from here too so existing call sites
+(inference/predict.py) don't need to change.
 """
 
 from __future__ import annotations
@@ -13,43 +14,9 @@ from typing import Dict
 
 import numpy as np
 
-from weather_fno.data.preprocessing import flip_axes, normalise
+from weather_fno.data.preprocessing import compute_relative_humidity, flip_axes, normalise
 
-
-def compute_relative_humidity(
-    specific_humidity: np.ndarray,
-    temperature: np.ndarray,
-    pressure_hpa: float,
-) -> np.ndarray:
-    """
-    Derive relative humidity (fraction, 0-1) from specific humidity and
-    temperature on a pressure-level surface, using Tetens' formula for
-    saturation vapour pressure.
-
-    pressure_hpa is a constant, not a field: specific_humidity and
-    temperature are already given ON a pressure level (500 or 850 hPa), so
-    that level number is the pressure everywhere in the field.
-
-    Must return a FRACTION (0-1), not a percentage -- that's the
-    convention every store that provides relative_humidity directly
-    already uses, and the model was trained on that convention.
-
-    Args:
-        specific_humidity: kg/kg.
-        temperature: Kelvin.
-        pressure_hpa: the pressure level these fields are on (e.g. 500).
-
-    Returns:
-        Relative humidity as a fraction (0-1), same shape as inputs.
-    """
-    t_celsius = temperature - 273.15
-    e_sat = 6.1078 * np.power(10.0, (7.5 * t_celsius) / (237.3 + t_celsius))
-
-    q = specific_humidity
-    e = q * pressure_hpa / (0.622 + 0.378 * q)
-
-    rh = e / e_sat
-    return np.clip(rh, 0.0, 1.0)
+__all__ = ["compute_relative_humidity", "flip_axes_inference", "normalise_for_inference"]
 
 
 def flip_axes_inference(arr: np.ndarray, flip_lat: bool, flip_lon: bool) -> np.ndarray:

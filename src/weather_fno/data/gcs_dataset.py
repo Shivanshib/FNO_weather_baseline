@@ -1,12 +1,24 @@
 """
-PyTorch Dataset for the coarse (64x32, 20-channel) ERA5-style training
-data, streamed from a GCS zarr store.
+PyTorch Dataset for 20-channel ERA5-style training data, streamed from a
+GCS zarr store. data.gcs_bucket_path/resolution/flip_lat/flip_lon (and
+derive_relative_humidity, for a store that doesn't provide it directly)
+are all just config -- this class itself doesn't assume any particular
+grid, so an experiment override can point training at the coarse 64x32
+store (the baseline default), the 1.5deg 240x121 store, or the native
+1440x721 store instead (see configs/experiments/train_on_1p5deg.yaml /
+train_on_native_highres.yaml).
 
 The whole split fits in memory, so __init__ fetches and normalises it all
-up front. Only the small normalisation stats (mean/std/lat_values) ever
-get cached to disk -- not the full array, which can be several GB and
-would risk filling up a shared/quota-limited disk. So every run re-fetches
-from GCS on startup instead (a few minutes, but bounded).
+up front -- there is no lazy/streamed reading. Only the small
+normalisation stats (mean/std/lat_values) ever get cached to disk -- not
+the full array, which can be several GB (at the coarse baseline's
+resolution) to many TB (at native resolution -- see
+train_on_native_highres.yaml's own comments) and would risk filling up a
+shared/quota-limited disk. So every run re-fetches from GCS on startup
+instead (a few minutes at coarse resolution, but bounded ONLY by however
+much date range x resolution you ask for -- a higher-resolution
+experiment MUST use a correspondingly shorter date range, since this
+eager fetch has to fit in RAM).
 """
 
 from __future__ import annotations
@@ -22,11 +34,12 @@ from torch.utils.data import Dataset
 
 from weather_fno.config import ChannelSpec
 from weather_fno.data.io import open_dataset
-from weather_fno.data.preprocessing import flip_axes, normalise
+from weather_fno.data.preprocessing import compute_relative_humidity, flip_axes, normalise
 
 
 def _select_channels(
-    ds: xr.Dataset, channels: List[ChannelSpec], lat_dim: str, lon_dim: str
+    ds: xr.Dataset, channels: List[ChannelSpec], lat_dim: str, lon_dim: str,
+    derive_relative_humidity: bool = False,
 ) -> List[np.ndarray]:
     """
     Pull every configured channel out of the store, in configured order.
@@ -41,9 +54,23 @@ def _select_channels(
     Transposes to (time, [level,] lat, lon) by dimension NAME, not
     position, so this is correct regardless of how the store lays out its
     axes internally.
+
+    derive_relative_humidity: if True, every `relative_humidity` channel
+    is derived from specific_humidity + temperature at that channel's
+    level instead of fetched as its own variable (data/preprocessing.py::
+    compute_relative_humidity) -- needed for a store like native ERA5
+    that doesn't provide relative_humidity directly (same derivation
+    inference/predict.py::load_inference_data already uses for that same
+    store at inference time). Every other channel still goes through the
+    grouped-fetch path above unchanged; specific_humidity and temperature
+    are themselves fetched as ONE grouped call each (covering every level
+    that needs deriving), for the same chunk-reuse reason.
     """
+    direct_channels = [c for c in channels if not (derive_relative_humidity and c.name == "relative_humidity")]
+    rh_channels = [c for c in channels if derive_relative_humidity and c.name == "relative_humidity"]
+
     by_name: Dict[str, List[ChannelSpec]] = {}
-    for spec in channels:
+    for spec in direct_channels:
         by_name.setdefault(spec.name, []).append(spec)
 
     values_by_id: Dict[int, np.ndarray] = {}
@@ -65,6 +92,16 @@ def _select_channels(
             level_desc = "surface/integrated"
         print(f"  fetched {name} ({level_desc}) in {time.time() - t0:.1f}s")
 
+    if rh_channels:
+        t0 = time.time()
+        levels = [s.level for s in rh_channels]
+        q = ds["specific_humidity"].sel(level=levels).transpose("time", "level", lat_dim, lon_dim).values
+        t = ds["temperature"].sel(level=levels).transpose("time", "level", lat_dim, lon_dim).values
+        for i, spec in enumerate(rh_channels):
+            values_by_id[id(spec)] = compute_relative_humidity(q[:, i], t[:, i], pressure_hpa=spec.level)
+        print(f"  derived relative_humidity ({len(levels)} level(s): {levels}) from "
+              f"specific_humidity+temperature in {time.time() - t0:.1f}s")
+
     return [values_by_id[id(spec)] for spec in channels]
 
 
@@ -84,6 +121,7 @@ class GCSWeatherDataset(Dataset):
         lon_dim: str = "longitude",
         stats: Optional[Dict[str, np.ndarray]] = None,
         cache_path: Optional[str] = None,
+        derive_relative_humidity: bool = False,
     ):
         """
         Args:
@@ -105,6 +143,11 @@ class GCSWeatherDataset(Dataset):
                 without needing this run's data in memory. Only saved when
                 stats=None -- i.e. only when this call is the one actually
                 fitting fresh stats.
+            derive_relative_humidity: True for a store (e.g. native ERA5)
+                that doesn't provide relative_humidity directly -- see
+                _select_channels above. False (default) for the coarse/
+                1.5deg stores, which already provide it like every other
+                variable.
         """
         self.channels = channels
         self.flip_lat = flip_lat
@@ -130,7 +173,9 @@ class GCSWeatherDataset(Dataset):
         # 3. Fetch every configured channel and stack into (T, C, H, W).
         print(f"Fetching {len(channels)} channels ({start} to {end}) from {gcs_bucket_path}...")
         t0 = time.time()
-        arr = np.stack(_select_channels(ds, channels, lat_dim, lon_dim), axis=1)
+        arr = np.stack(
+            _select_channels(ds, channels, lat_dim, lon_dim, derive_relative_humidity), axis=1
+        )
         print(f"Done fetching in {time.time() - t0:.1f}s")
 
         # 4. Orientation fix, then per-channel standardisation.

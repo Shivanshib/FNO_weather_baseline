@@ -27,6 +27,7 @@ def build_train_val_datasets(data_cfg: DataConfig):
         lon_dim=data_cfg.lon_dim,
         stats=None,  # None = fit fresh stats from this (training) data
         cache_path=train_cache,
+        derive_relative_humidity=data_cfg.derive_relative_humidity,
     )
 
     val_ds = GCSWeatherDataset(
@@ -39,6 +40,7 @@ def build_train_val_datasets(data_cfg: DataConfig):
         lat_dim=data_cfg.lat_dim,
         lon_dim=data_cfg.lon_dim,
         stats=train_ds.stats,  # reuse TRAIN stats -- never fit stats on val
+        derive_relative_humidity=data_cfg.derive_relative_humidity,
     )
 
     return train_ds, val_ds

@@ -66,6 +66,32 @@ def _plot_loss_panel(ax, epochs, train_loss, val_loss, label: str, log_scale: bo
     ax.grid(alpha=0.3, which="both" if log_scale else "major")
 
 
+def _plot_finetune_step_panel(ax, epochs, train_step, val_step, val_combined,
+                               ref_line: Optional[float], ref_label: str,
+                               label: str, log_scale: bool) -> None:
+    """
+    One fine-tune sub-panel for a SINGLE step (t+1 or t+2): that step's own
+    train/val loss, plus the combined (both-steps-summed) VALIDATION loss
+    in grey for scale/context -- val rather than train since that's the
+    metric that actually matters for judging fine-tuning progress.
+    ref_line (t+1 panel only, pretrain's own final val loss) shows whether
+    fine-tuning's 2-step objective has traded away any of the accuracy on
+    the plain single-step task pretraining was already optimizing.
+    """
+    ax.plot(epochs, train_step, label="train", color=cm.viridis(0.2))
+    ax.plot(epochs, val_step, label="val", color=cm.viridis(0.7))
+    ax.plot(epochs, val_combined, label="combined (val)", color="grey", linestyle=":", linewidth=2)
+    if ref_line is not None:
+        ax.axhline(ref_line, color="black", linestyle="--", linewidth=1, label=ref_label)
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("lat-weighted MSE")
+    ax.set_title(label)
+    if log_scale:
+        ax.set_yscale("log")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both" if log_scale else "major")
+
+
 def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bool = False,
                   pretrain_epochs: Optional[int] = None) -> None:
     """
@@ -73,20 +99,36 @@ def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bo
     dropped enough that the linear plot flattens out.
 
     pretrain_epochs (cfg.training.epochs): if given AND history actually
-    contains epochs past it (i.e. fine-tuning ran), splits into two
-    side-by-side panels -- pretrain and fine-tune -- instead of one
-    continuous line. This isn't just cosmetic: fine-tuning sums TWO
-    steps' loss (Trainer._run_epoch's n_future_steps branch) while
-    pretraining logs a single step's loss, so the two phases are on
-    genuinely different scales and a shared axis makes fine-tuning's own
-    (real, meaningful) progress within its own phase hard to read once
-    it's dwarfed by the jump at the boundary. Omit (or leave None) to get
-    the old single-panel behaviour -- e.g. smoke_test.py's runs, which
+    contains epochs past it (i.e. fine-tuning ran), splits into panels
+    instead of one continuous line -- fine-tuning sums TWO steps' loss
+    (Trainer._run_epoch's n_future_steps branch) while pretraining logs a
+    single step's loss, so a shared axis would dwarf fine-tuning's own
+    progress under the scale jump at the boundary. Omit (or leave None)
+    for the old single-panel behaviour -- e.g. smoke_test.py's runs, which
     force finetune_epochs=0 and so never have a boundary to split on.
+
+    When Trainer.fit's per-step breakdown (train_loss_by_step/
+    val_loss_by_step, added alongside the combined train_loss/val_loss)
+    is available for every fine-tune epoch, the fine-tune side becomes TWO
+    panels instead of one -- t+1 and t+2 each get their own train/val
+    curves, both against the same combined (val) curve in grey, so you can
+    see how much of the combined loss each step actually contributes
+    instead of only their sum. A checkpoint whose fine-tune epochs predate
+    this (missing/incomplete train_loss_by_step) falls back to the older
+    single combined fine-tune panel instead of raising.
     """
     train_loss, val_loss = history["train_loss"], history["val_loss"]
     n_epochs = len(train_loss)
     split = pretrain_epochs is not None and n_epochs > pretrain_epochs
+
+    has_step_breakdown = (
+        split
+        and "train_loss_by_step" in history and "val_loss_by_step" in history
+        and len(history["train_loss_by_step"]) == n_epochs
+        and len(history["val_loss_by_step"]) == n_epochs
+        and all(len(row) == 2 for row in history["train_loss_by_step"][pretrain_epochs:])
+        and all(len(row) == 2 for row in history["val_loss_by_step"][pretrain_epochs:])
+    )
 
     title = f"Training history {run_name}".strip()
     if log_scale:
@@ -96,7 +138,7 @@ def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bo
         fig, ax = plt.subplots(figsize=(7, 4))
         _plot_loss_panel(ax, range(n_epochs), train_loss, val_loss, "", log_scale)
         fig.suptitle(title)
-    else:
+    elif not has_step_breakdown:
         fig, (ax_pre, ax_fine) = plt.subplots(1, 2, figsize=(13, 4))
         pre_epochs = range(pretrain_epochs)
         fine_epochs = range(pretrain_epochs, n_epochs)
@@ -104,6 +146,36 @@ def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bo
                           val_loss[:pretrain_epochs], "pretrain (1-step)", log_scale)
         _plot_loss_panel(ax_fine, fine_epochs, train_loss[pretrain_epochs:],
                           val_loss[pretrain_epochs:], "fine-tune (2-step, summed loss)", log_scale)
+        fig.suptitle(title)
+        fig.tight_layout()
+    else:
+        fig, (ax_pre, ax_t1, ax_t2) = plt.subplots(1, 3, figsize=(18, 4))
+        pre_epochs = range(pretrain_epochs)
+        fine_epochs = range(pretrain_epochs, n_epochs)
+
+        _plot_loss_panel(ax_pre, pre_epochs, train_loss[:pretrain_epochs],
+                          val_loss[:pretrain_epochs], "pretrain (1-step)", log_scale)
+
+        train_by_step = history["train_loss_by_step"][pretrain_epochs:]
+        val_by_step = history["val_loss_by_step"][pretrain_epochs:]
+        val_combined_fine = val_loss[pretrain_epochs:]
+        # pretrain_epochs > 0 in every real case (fine-tuning only starts
+        # after completing pretrain) -- guarded anyway so a degenerate
+        # cfg.epochs=0 can't silently index val_loss[-1] (its LAST epoch)
+        # instead of raising or simply omitting the reference line.
+        pretrain_final_val = val_loss[pretrain_epochs - 1] if pretrain_epochs > 0 else None
+
+        _plot_finetune_step_panel(
+            ax_t1, fine_epochs, [r[0] for r in train_by_step], [r[0] for r in val_by_step],
+            val_combined_fine, pretrain_final_val, "pretrain final val",
+            "fine-tune t+1", log_scale,
+        )
+        _plot_finetune_step_panel(
+            ax_t2, fine_epochs, [r[1] for r in train_by_step], [r[1] for r in val_by_step],
+            val_combined_fine, None, None,
+            "fine-tune t+2", log_scale,
+        )
+
         fig.suptitle(title)
         fig.tight_layout()
 

@@ -165,7 +165,7 @@ class Trainer:
             self.optimizer, T_max=finetune_t_max, eta_min=self.cfg.min_lr,
         )
 
-    def _run_epoch(self, loader: DataLoader, train: bool, n_future_steps: int = 1) -> float:
+    def _run_epoch(self, loader: DataLoader, train: bool, n_future_steps: int = 1):
         """
         One pass over `loader`. Updates weights only if train=True.
 
@@ -180,9 +180,18 @@ class Trainer:
         intermediate states) -- and sums the loss from every step before
         one single backward pass, matching FourCastNet's fine-tuning
         procedure.
+
+        Returns:
+            (avg_total_loss, avg_step_losses) -- avg_step_losses is a list
+            of length n_future_steps, each step's OWN loss averaged over
+            the epoch (not summed together like avg_total_loss is), so a
+            caller can tell how much of the fine-tune phase's combined
+            loss comes from the direct t+1 prediction vs. the compounded
+            t+2 one, instead of only seeing their sum.
         """
         self.model.train(mode=train)
         total_loss, n_batches = 0.0, 0
+        step_losses = [0.0] * n_future_steps
 
         for x, y in loader:
             x, y = x.to(self.device), y.to(self.device)
@@ -191,7 +200,9 @@ class Trainer:
                 if n_future_steps == 1:
                     pred = self.model(x)
                     target = (y - x) if self.target_mode == "residual" else y
-                    loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
+                    step_loss = lat_weighted_mse(pred, target, self.lat_weight_tensor)
+                    loss = step_loss
+                    step_losses[0] += step_loss.item()
                 else:
                     state = x
                     loss = 0.0
@@ -199,7 +210,9 @@ class Trainer:
                         y_step = y[:, step]
                         raw = self.model(state)
                         target = (y_step - state) if self.target_mode == "residual" else y_step
-                        loss = loss + lat_weighted_mse(raw, target, self.lat_weight_tensor)
+                        step_loss = lat_weighted_mse(raw, target, self.lat_weight_tensor)
+                        loss = loss + step_loss
+                        step_losses[step] += step_loss.item()
                         state = (state + raw) if self.target_mode == "residual" else raw
 
                 if train:
@@ -210,15 +223,18 @@ class Trainer:
             total_loss += loss.item()
             n_batches += 1
 
-        return total_loss / max(n_batches, 1)
+        n_batches = max(n_batches, 1)
+        return total_loss / n_batches, [s / n_batches for s in step_losses]
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader,
             train_loader_2step: DataLoader = None, val_loader_2step: DataLoader = None):
         """
         Train until cfg.epochs + cfg.finetune_epochs, or early stopping,
         whichever comes first. Returns the history dict (train_loss,
-        val_loss, epoch_time_seconds -- one entry per epoch, all three
-        the same length, and all persisted across resumes).
+        val_loss, train_loss_by_step, val_loss_by_step, epoch_time_seconds
+        -- one entry per epoch, all the same length, and all persisted
+        across resumes). The `_by_step` entries are themselves lists,
+        length 1 during pretrain and length 2 (t+1, t+2) during fine-tune.
 
         train_loader_2step/val_loader_2step (built from a MultiStepDataset
         with n_future_steps=2, see scripts/train.py) are required if
@@ -253,12 +269,20 @@ class Trainer:
             )
 
             t0 = time.time()
-            train_loss = self._run_epoch(loader, train=True, n_future_steps=n_future_steps)
-            val_loss = self._run_epoch(vloader, train=False, n_future_steps=n_future_steps)
+            train_loss, train_step_losses = self._run_epoch(loader, train=True, n_future_steps=n_future_steps)
+            val_loss, val_step_losses = self._run_epoch(vloader, train=False, n_future_steps=n_future_steps)
             elapsed = time.time() - t0
 
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
+            # Per-step breakdown of the loss above -- length 1 (== the
+            # combined value itself) during pretrain, length 2 (t+1, t+2)
+            # during fine-tune. Lets utils/plotting.py::plot_history show
+            # how much of fine-tuning's combined loss comes from the
+            # direct t+1 step vs. the compounded t+2 one, not just their
+            # sum. setdefault covers checkpoints saved before this existed.
+            self.history.setdefault("train_loss_by_step", []).append(train_step_losses)
+            self.history.setdefault("val_loss_by_step", []).append(val_step_losses)
             # Pure compute time (excludes data-fetch/setup) -- persisted
             # so total training cost survives resumes and is comparable
             # across runs without re-timing anything. setdefault covers

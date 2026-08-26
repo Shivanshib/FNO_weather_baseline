@@ -1,0 +1,27 @@
+# One half of a direct-vs-residual comparison (see
+# configs/experiments/target_mode_direct_80_50.yaml for the other half),
+# on the same expanded 30-year training window as target_mode_residual_1985.yaml
+# (data.train_start=1985-01-01, configs/baseline_fno.yaml) -- but, unlike
+# that file, this one does NOT override training.epochs, so it trains the
+# baseline's OWN schedule as-is: 80 pretrain epochs + 50 fine-tune epochs
+# (FourCastNet's actual recipe), instead of 200 single-step pretrain
+# epochs with no fine-tuning. A NEW run_name (not target_mode_residual_1985's)
+# so this doesn't collide with or auto-resume that run's checkpoint.
+# Same architecture as configs/baseline_fno.yaml exactly (no
+# factorization, n_modes [16, 32], hidden_channels 64, n_layers 4) --
+# this file only changes run_name and model.target_mode, so any
+# difference in results between the two runs comes purely from
+# direct-vs-residual prediction, not from some other config difference.
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_residual_80_50.yaml
+#   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_residual_80_50.yaml --targets coarse
+run_name: "target_mode_residual_80_50"
+
+model:
+  target_mode: "residual"
+
+training:
+  # Same seed as target_mode_direct_80_50.yaml -- see that file's comment.
+  seed: 42
+  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
+  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.

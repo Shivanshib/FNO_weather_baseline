@@ -5,6 +5,8 @@ Every plot the project produces, one function each:
                           available) RMSE scorecard
   plot_acc_vs_lead_time   model anomaly correlation coefficient (ACC)
                           scorecard, with a skill-threshold reference line
+  plot_lat_banded_rmse    one channel's RMSE vs lead time, one line per
+                          latitude band, showing where error concentrates
   plot_forecast_maps      ground truth / forecast / error map grid
   plot_power_spectrum     radial power spectrum comparison
 Plus recentre_longitude, a shared helper used before map plots.
@@ -229,6 +231,54 @@ def plot_acc_vs_lead_time(
     plt.close(fig)
 
 
+def plot_lat_banded_rmse(
+    result: dict,
+    channels: List[ChannelSpec],
+    channel_short_name: str,
+    out_path: str,
+    title: str = "",
+) -> None:
+    """
+    Lat-weighted RMSE vs lead time for ONE channel, one line per latitude
+    band (training/metrics.py::lat_banded_rmse_per_channel), plus the
+    global (all-bands) curve for reference -- shows whether error is
+    spread evenly across latitude or concentrated at the poles/tropics,
+    which the single global number in plot_rmse_vs_lead_time can't.
+
+    Args:
+        result: one target's result dict from inference/evaluate.py, or
+            loaded straight from its saved {target}_eval_metrics.npz --
+            needs "lead_hours", "model_rmse" (n_steps, C),
+            "model_rmse_banded" (n_steps, n_bands, C), and
+            "lat_band_labels" (n_bands strings).
+        channel_short_name: which channel to plot, by short_name.
+    """
+    idx_by_short_name = {c.short_name: i for i, c in enumerate(channels)}
+    if channel_short_name not in idx_by_short_name:
+        raise KeyError(f"{channel_short_name!r} not found in channels")
+    idx = idx_by_short_name[channel_short_name]
+
+    lead_days = result["lead_hours"] / 24
+    band_labels = [str(label) for label in result["lat_band_labels"]]
+    banded = result["model_rmse_banded"]
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for b, label in enumerate(band_labels):
+        ax.plot(lead_days, banded[:, b, idx], label=label, marker="o", markersize=3)
+    ax.plot(lead_days, result["model_rmse"][:, idx], label="global (all bands)",
+             color="black", linestyle=":", linewidth=2)
+    ax.set_xlabel("lead time (days)")
+    ax.set_ylabel("lat-weighted RMSE")
+    ax.set_title(f"{title} — {channel_short_name}".strip(" —"))
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_forecast_maps(
     result: dict,
     channels: List[ChannelSpec],
@@ -251,6 +301,11 @@ def plot_forecast_maps(
     like a flat, washed-out block. Forecast values outside that range just
     saturate to the scale's boundary colour instead, which actually shows
     where the forecast has left the plausible range.
+
+    aspect="equal" (not "auto") on every imshow -- 1 degree of longitude
+    and 1 degree of latitude render at the same scale, so each panel comes
+    out shaped like an actual world map (~2:1, wide) instead of squished/
+    stretched to whatever aspect ratio the subplot grid happened to give it.
 
     Args:
         result: one target's result dict from inference/evaluate.py
@@ -285,11 +340,11 @@ def plot_forecast_maps(
 
         ax_gt, ax_fc, ax_err = axes[row]
         ax_gt.imshow(gt_field, origin="lower", cmap="viridis", vmin=vmin, vmax=vmax,
-                     extent=extent, aspect="auto")
+                     extent=extent, aspect="equal")
         im_fc = ax_fc.imshow(fc_field, origin="lower", cmap="viridis", vmin=vmin, vmax=vmax,
-                              extent=extent, aspect="auto")
+                              extent=extent, aspect="equal")
         im_err = ax_err.imshow(error, origin="lower", cmap="RdBu_r",
-                                vmin=-err_abs_max, vmax=err_abs_max, extent=extent, aspect="auto")
+                                vmin=-err_abs_max, vmax=err_abs_max, extent=extent, aspect="equal")
 
         lead_label = f"+{lead_hours[step]}h ({lead_hours[step] / 24:.1f}d)"
         ax_gt.set_ylabel(lead_label)

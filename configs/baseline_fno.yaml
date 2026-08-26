@@ -42,8 +42,11 @@ data:
   flip_lon: false
 
   # Time-based split, not random -- avoids leaking information between
-  # adjacent, highly correlated timesteps.
-  train_start: "2000-01-01"
+  # adjacent, highly correlated timesteps. train_start pushed back from
+  # 2000-01-01 to 1985-01-01 (2026-08-25) -- another 15 years of training
+  # data on top of the original 15 (2000-2014), 30 years total. val range
+  # unchanged.
+  train_start: "1985-01-01"
   train_end: "2014-12-31"
   val_start: "2015-01-01"
   val_end: "2016-12-31"

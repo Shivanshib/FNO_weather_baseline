@@ -1,8 +1,11 @@
 """
 Every plot the project produces, one function each:
   plot_history            train/val loss curves
+  plot_history_mean_std   same, but mean ± std-dev band across several
+                          seeds' runs (scripts/run_seed_ensemble.py)
   plot_rmse_vs_lead_time  model vs persistence (vs climatology, if
-                          available) RMSE scorecard
+                          available) RMSE scorecard -- also plots a
+                          mean ± std-dev band if given one (same script)
   plot_acc_vs_lead_time   model anomaly correlation coefficient (ACC)
                           scorecard, with a skill-threshold reference line
   plot_lat_banded_rmse    one channel's RMSE vs lead time, one line per
@@ -184,6 +187,91 @@ def plot_history(history: dict, out_path: str, run_name: str = "", log_scale: bo
     plt.close(fig)
 
 
+def _plot_loss_panel_mean_std(ax, epochs, train_mean, train_std, val_mean, val_std,
+                               label: str, log_scale: bool) -> None:
+    train_mean, train_std = np.asarray(train_mean), np.asarray(train_std)
+    val_mean, val_std = np.asarray(val_mean), np.asarray(val_std)
+    epochs = np.asarray(list(epochs))
+
+    train_color, val_color = cm.viridis(0.2), cm.viridis(0.7)
+    ax.plot(epochs, train_mean, label="train (mean)", color=train_color)
+    ax.fill_between(epochs, train_mean - train_std, train_mean + train_std,
+                     color=train_color, alpha=0.2, label="train (±1 std)")
+    ax.plot(epochs, val_mean, label="val (mean)", color=val_color)
+    ax.fill_between(epochs, val_mean - val_std, val_mean + val_std,
+                     color=val_color, alpha=0.2, label="val (±1 std)")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("lat-weighted RMSE")
+    ax.set_title(label)
+    if log_scale:
+        ax.set_yscale("log")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both" if log_scale else "major")
+
+
+def plot_history_mean_std(
+    train_rmse_mean: np.ndarray, train_rmse_std: np.ndarray,
+    val_rmse_mean: np.ndarray, val_rmse_std: np.ndarray,
+    out_path: str, run_name: str = "", log_scale: bool = False,
+    pretrain_epochs: Optional[int] = None,
+) -> None:
+    """
+    Same pretrain/fine-tune side-by-side split as plot_history (when
+    pretrain_epochs is given and fine-tuning ran), but for an ENSEMBLE of
+    several seeds' runs instead of one run -- see scripts/
+    run_seed_ensemble.py. Train/val each become a mean line with a shaded
+    +/-1 std-dev band instead of a single line.
+
+    Args:
+        train_rmse_mean/std, val_rmse_mean/std: 1D arrays, one entry per
+            epoch -- lat-weighted RMSE (sqrt of Trainer.fit's own logged
+            MSE, to match the "lat-weighted rmse" convention everything
+            else reports results in, e.g. evaluate.py's scorecards),
+            already averaged (and std-dev'd) across seeds by the caller.
+            All four must be the same length (run_seed_ensemble.py aligns
+            seeds of different epoch counts -- e.g. from early stopping --
+            by truncating to the shortest before calling this).
+        pretrain_epochs: same meaning as plot_history's -- omit for a
+            single combined panel (e.g. finetune_epochs=0 for every seed).
+
+    Deliberately does NOT attempt plot_history's t+1/t+2 fine-tune-step
+    breakdown (fix #22) -- aggregating that across seeds too would need
+    each seed's own per-step history carried through an extra axis, for a
+    tool whose actual question is coarser ("was fine-tuning's overall
+    convergence seed-sensitive"), not single-run step-by-step diagnosis.
+    """
+    train_rmse_mean = np.asarray(train_rmse_mean)
+    n_epochs = len(train_rmse_mean)
+    split = pretrain_epochs is not None and n_epochs > pretrain_epochs
+
+    title = f"Training history (mean ± std across seeds) {run_name}".strip()
+    if log_scale:
+        title += " (log scale)"
+
+    if not split:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        _plot_loss_panel_mean_std(ax, range(n_epochs), train_rmse_mean, train_rmse_std,
+                                   val_rmse_mean, val_rmse_std, "", log_scale)
+        fig.suptitle(title)
+    else:
+        fig, (ax_pre, ax_fine) = plt.subplots(1, 2, figsize=(13, 4))
+        _plot_loss_panel_mean_std(
+            ax_pre, range(pretrain_epochs), train_rmse_mean[:pretrain_epochs], train_rmse_std[:pretrain_epochs],
+            val_rmse_mean[:pretrain_epochs], val_rmse_std[:pretrain_epochs], "pretrain (1-step)", log_scale,
+        )
+        _plot_loss_panel_mean_std(
+            ax_fine, range(pretrain_epochs, n_epochs), train_rmse_mean[pretrain_epochs:], train_rmse_std[pretrain_epochs:],
+            val_rmse_mean[pretrain_epochs:], val_rmse_std[pretrain_epochs:],
+            "fine-tune (2-step, summed loss)", log_scale,
+        )
+        fig.suptitle(title)
+        fig.tight_layout()
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_rmse_vs_lead_time(
     result: dict,
     channels: List[ChannelSpec],
@@ -203,7 +291,11 @@ def plot_rmse_vs_lead_time(
             (needs "lead_hours", "model_rmse" (n_steps, C),
             "persistence_rmse" (n_steps, C); "climatology_rmse"
             (n_steps, C) plotted too if present -- coarse-grid targets
-            only, see data/climatology.py).
+            only, see data/climatology.py). If "model_rmse_std" (n_steps,
+            C) is ALSO present -- e.g. aggregated across several seeds'
+            runs, see scripts/run_seed_ensemble.py -- "model_rmse" is
+            treated as the mean and a shaded +/-1 std-dev band is drawn
+            around it, instead of just a marker line.
         channels: cfg.data.channels, used to map headline_channels'
             short_names to column indices.
         headline_channels: short_names to plot, e.g. ["t2m", "z500"].
@@ -220,10 +312,17 @@ def plot_rmse_vs_lead_time(
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 3.5 * nrows), squeeze=False)
 
     has_climatology = "climatology_rmse" in result
+    has_std = "model_rmse_std" in result
+    model_color = cm.viridis(0.2)
     for ax, short_name in zip(axes.flat, headline_channels):
         idx = idx_by_short_name[short_name]
-        ax.plot(lead_days, result["model_rmse"][:, idx], label="model",
-                 color=cm.viridis(0.2), marker="o", markersize=3)
+        model_mean = result["model_rmse"][:, idx]
+        ax.plot(lead_days, model_mean, label="model (mean)" if has_std else "model",
+                 color=model_color, marker="o", markersize=3)
+        if has_std:
+            model_std = result["model_rmse_std"][:, idx]
+            ax.fill_between(lead_days, model_mean - model_std, model_mean + model_std,
+                             color=model_color, alpha=0.2, label="model (±1 std)")
         ax.plot(lead_days, result["persistence_rmse"][:, idx], label="persistence",
                  color=cm.viridis(0.7), marker="o", markersize=3, linestyle="--")
         if has_climatology:
@@ -266,7 +365,11 @@ def plot_acc_vs_lead_time(
             needs "lead_hours" and "model_acc" (n_steps, C). Only present
             for targets climatology was computed for (coarse-grid only,
             see data/climatology.py) -- callers should skip this plot
-            entirely if "model_acc" isn't in the result.
+            entirely if "model_acc" isn't in the result. If "model_acc_std"
+            (n_steps, C) is ALSO present -- e.g. aggregated across several
+            seeds' runs, see scripts/run_seed_ensemble.py -- "model_acc" is
+            treated as the mean and a shaded +/-1 std-dev band is drawn
+            around it, instead of just a marker line.
         channels, headline_channels: same as plot_rmse_vs_lead_time.
     """
     idx_by_short_name = {c.short_name: i for i, c in enumerate(channels)}
@@ -280,10 +383,17 @@ def plot_acc_vs_lead_time(
     nrows = -(-n // ncols)  # ceil division
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 3.5 * nrows), squeeze=False)
 
+    has_std = "model_acc_std" in result
+    model_color = cm.viridis(0.2)
     for ax, short_name in zip(axes.flat, headline_channels):
         idx = idx_by_short_name[short_name]
-        ax.plot(lead_days, result["model_acc"][:, idx], label="model",
-                 color=cm.viridis(0.2), marker="o", markersize=3)
+        model_mean = result["model_acc"][:, idx]
+        ax.plot(lead_days, model_mean, label="model (mean)" if has_std else "model",
+                 color=model_color, marker="o", markersize=3)
+        if has_std:
+            model_std = result["model_acc_std"][:, idx]
+            ax.fill_between(lead_days, model_mean - model_std, model_mean + model_std,
+                             color=model_color, alpha=0.2, label="model (±1 std)")
         ax.axhline(skill_threshold, color="gray", linestyle="--",
                    label=f"skill threshold ({skill_threshold})")
         ax.set_title(short_name)

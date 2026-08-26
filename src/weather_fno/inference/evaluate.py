@@ -9,13 +9,14 @@ Keeps the full forecast/ground-truth arrays in memory only, never writing
 them to disk -- a single native-resolution array is already ~2GB, so
 saving that (twice) risks a disk-quota problem for no benefit. Only the
 small per-lead-time metrics and the resulting plots get saved
-(scripts/evaluate.py does that).
+(run_full_evaluation below).
 """
 
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -33,6 +34,16 @@ from weather_fno.training.metrics import (
     lat_weighted_rmse_per_channel,
     lat_weights,
 )
+from weather_fno.utils.plotting import plot_acc_vs_lead_time, plot_forecast_maps, plot_rmse_vs_lead_time
+
+# Small, standard set of variables for the RMSE scorecard -- surface temp,
+# mid-tropospheric height, sea-level pressure, near-surface wind. Callers
+# (scripts/evaluate.py) can pass their own list instead -- these are just
+# the defaults for anything that doesn't.
+DEFAULT_HEADLINE_CHANNELS = ["t2m", "z500", "mslp", "u10"]
+
+# Which single channel gets full ground-truth/forecast/error maps by default.
+DEFAULT_MAP_CHANNEL = "t2m"
 
 
 def get_target_lat_lon(cfg: Config, target: InferenceTarget):
@@ -204,5 +215,92 @@ def run_evaluation(
             msg += f", climatology={final_climatology_rmse:.4g}, ACC={final_acc:.3f}"
         msg += f" (rollout: {results[target.name]['rollout_time_seconds']:.1f}s)"
         print(msg)
+
+    return results
+
+
+def run_full_evaluation(
+    cfg: Config,
+    headline_channels: Sequence[str] = DEFAULT_HEADLINE_CHANNELS,
+    map_channel: str = DEFAULT_MAP_CHANNEL,
+) -> Dict[str, dict]:
+    """
+    The full scripts/evaluate.py pipeline as an importable function: load
+    this run's own train stats + (optional) climatology, run_evaluation()
+    for every target in cfg.inference.targets, save each target's
+    {target}_eval_metrics.npz plus its scorecard/ACC/forecast-map plots to
+    cfg.inference.output_dir -- exactly what scripts/evaluate.py's CLI
+    does, minus argument parsing and --targets filtering (do that on
+    cfg.inference.targets yourself before calling this, same as
+    scripts/evaluate.py does).
+
+    Returns the same {target.name: result} dict run_evaluation() does, so
+    a caller that wants to aggregate across several calls (e.g.
+    scripts/run_seed_ensemble.py, once per seed) doesn't need to re-read
+    anything back from the .npz files it just wrote.
+    """
+    train_cache_path = cfg.data.stats_cache_path.replace("normalisation_stats", "train_cache")
+    cached = np.load(train_cache_path)
+    train_stats = {"mean": cached["mean"], "std": cached["std"]}
+
+    # Climatology is optional -- a run trained before this feature existed
+    # won't have it cached yet. Degrade gracefully (warn, skip
+    # climatology/ACC) rather than failing the whole evaluation.
+    climatology_path = cfg.data.stats_cache_path.replace("normalisation_stats", "climatology")
+    if Path(climatology_path).exists():
+        clim_cached = np.load(climatology_path)
+        climatology = {"climatology": clim_cached["climatology"], "hours_of_day": clim_cached["hours_of_day"]}
+    else:
+        climatology = None
+        print(f"[evaluate] no climatology cached at {climatology_path} -- skipping the "
+              f"climatology baseline and ACC (run scripts/compute_climatology.py to backfill it).")
+
+    results = run_evaluation(cfg, train_stats, climatology=climatology)
+
+    out_dir = Path(cfg.inference.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for target in cfg.inference.targets:
+        result = results[target.name]
+        has_climatology = "model_acc" in result
+
+        metrics_path = out_dir / f"{target.name}_eval_metrics.npz"
+        metrics_to_save = {"lead_hours": result["lead_hours"], "model_rmse": result["model_rmse"],
+                            "model_rmse_banded": result["model_rmse_banded"],
+                            "lat_band_labels": result["lat_band_labels"],
+                            "persistence_rmse": result["persistence_rmse"],
+                            "rollout_time_seconds": result["rollout_time_seconds"]}
+        if has_climatology:
+            metrics_to_save["climatology_rmse"] = result["climatology_rmse"]
+            metrics_to_save["model_acc"] = result["model_acc"]
+        np.savez(metrics_path, **metrics_to_save)
+        print(f"[{target.name}] saved metrics to {metrics_path}")
+
+        scorecard_path = out_dir / f"{target.name}_rmse_vs_lead_time.png"
+        plot_rmse_vs_lead_time(result, cfg.data.channels, headline_channels,
+                                str(scorecard_path), title=f"{target.name} -- RMSE vs lead time")
+        print(f"[{target.name}] saved scorecard plot to {scorecard_path}")
+
+        if has_climatology:
+            acc_path = out_dir / f"{target.name}_acc_vs_lead_time.png"
+            plot_acc_vs_lead_time(result, cfg.data.channels, headline_channels,
+                                   str(acc_path), title=f"{target.name} -- ACC vs lead time")
+            print(f"[{target.name}] saved ACC plot to {acc_path}")
+
+        # A handful of representative lead times: ~15% in, ~halfway, and
+        # the final step -- not hardcoded step numbers, so this adapts if
+        # forecast_lead_steps changes.
+        n_steps = cfg.inference.forecast_lead_steps
+        lead_step_indices = sorted(set([
+            max(0, round(n_steps * 0.15) - 1),
+            max(0, round(n_steps * 0.5) - 1),
+            n_steps - 1,
+        ]))
+
+        lat, lon = get_target_lat_lon(cfg, target)
+        maps_path = out_dir / f"{target.name}_{map_channel}_maps.png"
+        plot_forecast_maps(result, cfg.data.channels, map_channel, lat, lon,
+                            lead_step_indices, str(maps_path), title=target.name)
+        print(f"[{target.name}] saved forecast maps to {maps_path}")
 
     return results

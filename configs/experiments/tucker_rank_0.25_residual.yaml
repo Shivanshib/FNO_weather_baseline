@@ -1,0 +1,19 @@
+# Residual-mode counterpart to tucker_rank_0.25.yaml -- see
+# tucker_rank_0.75_residual.yaml's comment for the full explanation,
+# shared by all 4 "_residual" files. Same seed, same 1985-2014 training
+# window, same 80 pretrain + 50 fine-tune schedule -- only rank differs
+# within this set.
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.25_residual.yaml
+#   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.25_residual.yaml --targets coarse
+run_name: "tucker_rank_0.25_residual"
+
+model:
+  target_mode: "residual"
+  factorization: "tucker"
+  rank: 0.25
+
+training:
+  seed: 42
+  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
+  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.

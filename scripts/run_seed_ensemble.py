@@ -17,6 +17,16 @@ saved separately under outputs/{base_run_name}_seed_ensemble/ -- "store
 the same metrics as before, plus the new mean/std ones" means literally
 that: nothing about the per-seed outputs changes.
 
+EXCEPT for one seed: if `--seeds` includes the SAME seed the base
+`--config`/`--experiment` itself trains under (`training.seed`, 42 by
+default), and that run is already trained, it's REUSED as-is under its
+own existing (non-suffixed) run_name -- not retrained as a redundant
+`{base_run_name}_seed{seed}` copy. This matters in practice: adding 2 new
+seeds to a model you already trained under the default seed should cost
+2 more training runs, not 3. Its already-saved `{target}_eval_metrics.npz`
+is reused too if present (skipping a redundant rollout), falling back to
+a live evaluation only if that target wasn't evaluated for it yet.
+
 Restricted to a SINGLE inference target by default (coarse -- "low
 resolution" in the request that motivated this script), since evaluating
 native_highres/1p5deg three times over is expensive and this script's own
@@ -51,6 +61,7 @@ import copy
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from weather_fno.config import derive_run_paths, load_config, resolve_device, save_config_snapshot, set_seed
 from weather_fno.inference.evaluate import run_full_evaluation
@@ -90,25 +101,44 @@ def main():
     eval_results_by_target = {t.name: [] for t in base_cfg.inference.targets}
 
     for seed in args.seeds:
-        print(f"\n{'=' * 70}\nSeed {seed}  ({base_run_name}_seed{seed})\n{'=' * 70}")
-
         # A per-seed Config, not a per-seed experiment YAML -- only
         # run_name/training.seed differ from base_cfg, so mutating an
         # already-resolved Config in memory is simpler than trying to
         # layer a second --experiment override file on top of the user's
         # own (load_config only supports one).
         cfg = copy.deepcopy(base_cfg)
-        cfg.run_name = f"{base_run_name}_seed{seed}"
-        cfg.training.seed = seed
-        derive_run_paths(cfg)  # re-derive every output path for the new run_name
+        reuse_base_run = seed == base_cfg.training.seed
+        if not reuse_base_run:
+            cfg.run_name = f"{base_run_name}_seed{seed}"
+            cfg.training.seed = seed
+            derive_run_paths(cfg)  # re-derive every output path for the new run_name
 
-        device = resolve_device(cfg.training.device)
-        set_seed(cfg.training.seed)  # before anything that consumes randomness -- see set_seed's docstring
-        save_config_snapshot(cfg)
+        best_ckpt_path = Path(cfg.training.checkpoint_dir) / "best.pt"
+        already_trained = reuse_base_run and best_ckpt_path.exists()
+        already_evaluated = already_trained and all(
+            (Path(cfg.inference.output_dir) / f"{t.name}_eval_metrics.npz").exists()
+            for t in cfg.inference.targets
+        )
 
-        histories.append(run_training(cfg, device))
+        tag = "  (reusing existing run -- matches the base config's own seed)" if already_trained else ""
+        print(f"\n{'=' * 70}\nSeed {seed}  ({cfg.run_name}){tag}\n{'=' * 70}")
 
-        results = run_full_evaluation(cfg, headline_channels=HEADLINE_CHANNELS)
+        if already_trained:
+            history = torch.load(best_ckpt_path, map_location="cpu", weights_only=False)["history"]
+        else:
+            device = resolve_device(cfg.training.device)
+            set_seed(cfg.training.seed)  # before anything that consumes randomness -- see set_seed's docstring
+            save_config_snapshot(cfg)
+            history = run_training(cfg, device)
+        histories.append(history)
+
+        if already_evaluated:
+            results = {
+                t.name: dict(np.load(Path(cfg.inference.output_dir) / f"{t.name}_eval_metrics.npz"))
+                for t in cfg.inference.targets
+            }
+        else:
+            results = run_full_evaluation(cfg, headline_channels=HEADLINE_CHANNELS)
         for name, result in results.items():
             eval_results_by_target[name].append(result)
 

@@ -1,0 +1,20 @@
+# Extreme-end extension of the tucker rank sweep (0.75, 0.5, 0.25, 0.05,
+# now also 0.025, 0.01 -- see tucker_rank_0.05.yaml for the original 4-way
+# sweep). Same seed, same 1985-2014 training window, same 80 pretrain + 50
+# fine-tune schedule as the baseline -- only rank differs. The most
+# compressed model in the whole sweep -- expect this to be the clearest
+# test of whether the tucker factorization has a breaking point.
+#
+#   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.01.yaml
+#   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.01.yaml --targets coarse
+run_name: "tucker_rank_0.01"
+
+model:
+  factorization: "tucker"
+  rank: 0.01
+
+training:
+  # Same seed across the whole sweep -- see tucker_rank_0.75.yaml's comment.
+  seed: 42
+  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
+  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.

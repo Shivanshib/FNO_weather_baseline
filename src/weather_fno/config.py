@@ -202,12 +202,31 @@ def derive_run_paths(cfg: Config) -> None:
         training.checkpoint_dir   -> {output_dir}/{run_name}/checkpoints
         training.plot_dir         -> {output_dir}/{run_name}/plots
         training.log_dir          -> {output_dir}/{run_name}/logs
-        data.stats_cache_path     -> {output_dir}/{run_name}/stats/normalisation_stats.npz
+        data.stats_cache_path     -> {output_dir}/stats_{train_start}_{train_end}/normalisation_stats.npz
         inference.output_dir      -> {output_dir}/{run_name}/predictions
         inference.checkpoint_path -> {training.checkpoint_dir}/best.pt
 
     training.output_dir itself is untouched -- it's the one shared root
     every run's folder sits under, set directly from the YAML.
+
+    data.stats_cache_path is the one exception to "namespaced under this
+    run_name" -- it's namespaced by data.train_start/train_end instead,
+    SHARED across every run using that same training split. The
+    normalisation stats (mean/std) and climatology cached there
+    (data/split.py, training/run.py -- both real filenames are derived
+    from this one by string-replacing "normalisation_stats") depend only
+    on data.gcs_bucket_path/channels/train_start/train_end -- never on
+    run_name, training.seed, model architecture, or target_mode -- so two
+    runs sharing a training split produce numerically IDENTICAL stats/
+    climatology (confirmed directly, not assumed -- see CODE_REFERENCE.md).
+    Computing and storing one copy per run was pure waste (climatology.npz
+    alone is ~200MB) once enough experiments shared a split, hence this.
+    Keyed on train_start/train_end alone, NOT gcs_bucket_path/channels --
+    fine for every experiment this project actually runs (all share the
+    same store/channel list), but two DIFFERENT stores/channel lists that
+    happened to reuse the same date-range string would incorrectly share
+    a stats folder. Not a real risk currently, worth knowing if that ever
+    changes.
 
     Called once by load_config(). Call it again yourself if you change
     cfg.run_name afterwards (scripts/sweep.py does this per sweep entry)
@@ -217,7 +236,8 @@ def derive_run_paths(cfg: Config) -> None:
     cfg.training.checkpoint_dir = f"{run_dir}/checkpoints"
     cfg.training.plot_dir = f"{run_dir}/plots"
     cfg.training.log_dir = f"{run_dir}/logs"
-    cfg.data.stats_cache_path = f"{run_dir}/stats/normalisation_stats.npz"
+    stats_dir = f"{cfg.training.output_dir}/stats_{cfg.data.train_start}_{cfg.data.train_end}"
+    cfg.data.stats_cache_path = f"{stats_dir}/normalisation_stats.npz"
     cfg.inference.output_dir = f"{run_dir}/predictions"
     cfg.inference.checkpoint_path = f"{cfg.training.checkpoint_dir}/best.pt"
 

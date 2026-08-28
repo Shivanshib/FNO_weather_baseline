@@ -142,7 +142,16 @@ class GCSWeatherDataset(Dataset):
                 (evaluate.py, predict_single_variable.py) can reuse them
                 without needing this run's data in memory. Only saved when
                 stats=None -- i.e. only when this call is the one actually
-                fitting fresh stats.
+                fitting fresh stats. Callers now pass a path SHARED across
+                every run using the same (start, end) training split
+                (config.py::derive_run_paths), since the fitted values only
+                depend on the data itself, never on run_name/seed/
+                architecture -- unconditionally overwritten here every
+                time regardless, which is harmless (deterministic fit,
+                same split -> byte-identical values) and simpler than
+                adding a skip-if-exists check for something this cheap to
+                recompute (unlike climatology.npz's ~200MB write, which
+                training/run.py DOES skip when already cached).
             derive_relative_humidity: True for a store (e.g. native ERA5)
                 that doesn't provide relative_humidity directly -- see
                 _select_channels above. False (default) for the coarse/

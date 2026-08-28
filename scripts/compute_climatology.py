@@ -1,9 +1,15 @@
 """
-Backfills outputs/{run_name}/stats/climatology.npz for a run that was
-trained BEFORE climatology existed (train.py now computes this
-automatically for every new run -- this script is only for runs started
-earlier). Needs only the training split's data, not the model/checkpoint
-at all, so this never touches or retrains anything.
+Backfills the training split's shared climatology.npz (outputs/
+stats_{train_start}_{train_end}/climatology.npz, config.py::
+derive_run_paths -- SHARED across every run using that same split) for a
+run that was trained BEFORE climatology existed (train.py now computes
+this automatically for every new run -- this script is only for runs
+started earlier). Needs only the training split's data, not the model/
+checkpoint at all, so this never touches or retrains anything.
+
+Since the cache is shared, this is a genuine no-op (no GCS fetch at all)
+if ANY other run already backfilled -- or trained under -- the exact same
+data.train_start/train_end.
 
 Usage:
     python scripts/compute_climatology.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_direct.yaml
@@ -14,7 +20,7 @@ from __future__ import annotations
 import argparse
 
 from weather_fno.config import load_config
-from weather_fno.data.climatology import compute_and_save_climatology
+from weather_fno.data.climatology import climatology_cache_is_valid, compute_and_save_climatology
 from weather_fno.data.gcs_dataset import GCSWeatherDataset
 from weather_fno.data.preprocessing import denormalise
 
@@ -26,6 +32,12 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config, override_path=args.experiment)
+
+    climatology_path = cfg.data.stats_cache_path.replace("normalisation_stats", "climatology")
+    if climatology_cache_is_valid(climatology_path):
+        print(f"[compute_climatology] already cached for this training split at {climatology_path} "
+              f"-- nothing to backfill, skipping the GCS fetch entirely.")
+        return
 
     # Train split only -- climatology doesn't need val data, so this
     # builds GCSWeatherDataset directly rather than going through
@@ -41,7 +53,6 @@ def main():
         lon_dim=cfg.data.lon_dim,
     )
 
-    climatology_path = cfg.data.stats_cache_path.replace("normalisation_stats", "climatology")
     train_physical = denormalise(train_ds.data.numpy(), train_ds.stats)
     compute_and_save_climatology(train_physical, train_ds.time_values, climatology_path)
 

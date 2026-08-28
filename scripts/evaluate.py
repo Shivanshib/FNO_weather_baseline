@@ -16,12 +16,14 @@ Saves, per target, into cfg.inference.output_dir:
   {target.name}_acc_vs_lead_time.png   ACC scorecard (only for targets with climatology)
   {target.name}_{MAP_CHANNEL}_maps.png ground truth / forecast / error maps
 
-climatology_rmse/model_acc need outputs/{run_name}/stats/climatology.npz,
-computed automatically by train.py -- for a run trained before this
-feature existed, run scripts/compute_climatology.py once to backfill it
-(doesn't need the model/checkpoint, so it's safe to run any time). A run
-without it just gets model_rmse/persistence_rmse as before, with a
-printed warning, not an error.
+climatology_rmse/model_acc need outputs/stats_{train_start}_{train_end}/
+climatology.npz (shared across every run using that same training split,
+see config.py::derive_run_paths), computed automatically by train.py --
+for a run trained before this feature existed (or before this sharing
+existed), run scripts/compute_climatology.py once to backfill it (doesn't
+need the model/checkpoint, so it's safe to run any time). A run without
+it just gets model_rmse/persistence_rmse as before, with a printed
+warning, not an error.
 
 Usage:
     python scripts/evaluate.py --config configs/baseline_fno.yaml

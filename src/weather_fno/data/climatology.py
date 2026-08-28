@@ -27,6 +27,7 @@ stride with interpolation at query time.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -101,6 +102,30 @@ def compute_climatology(
 
     smoothed = _circular_smooth(raw, window=smoothing_window_days)
     return {"climatology": smoothed.astype(np.float32), "hours_of_day": np.array(hours_of_day)}
+
+
+def climatology_cache_is_valid(path: str) -> bool:
+    """
+    True if `path` exists AND loads as a real, complete climatology.npz
+    (has both expected keys) -- False for a missing file OR a corrupted/
+    truncated one (e.g. an interrupted np.savez_compressed from a killed
+    process -- confirmed to actually happen, not a hypothetical: two
+    tucker-sweep seed-43 runs' shared climatology.npz were caught exactly
+    this way, ~50-100MB short of the real ~200MB and unreadable).
+
+    Used to decide whether it's safe to SKIP recomputing a shared
+    climatology cache (config.py::derive_run_paths -- data.stats_cache_path
+    is shared across every run using the same training split) -- an
+    existence-only check would happily "reuse" a corrupted file forever,
+    since nothing else ever rewrites it once skipped.
+    """
+    if not Path(path).exists():
+        return False
+    try:
+        with np.load(path) as d:
+            return "climatology" in d and "hours_of_day" in d
+    except Exception:
+        return False
 
 
 def compute_and_save_climatology(data: np.ndarray, time_values: np.ndarray, out_path: str) -> bool:

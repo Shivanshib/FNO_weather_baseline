@@ -1,20 +1,3 @@
-# One of a 4-way TFNO rank sweep (0.75, 0.5, 0.25, 0.05 -- see the sibling
-# tucker_rank_0.5.yaml/tucker_rank_0.25.yaml/tucker_rank_0.05.yaml files),
-# all otherwise identical to configs/baseline_fno.yaml: same seed, same
-# 1985-2014 training window, same 80 pretrain + 50 fine-tune epoch
-# schedule (training.epochs/finetune_epochs deliberately NOT overridden
-# here). Only model.factorization/rank differ across the 4 files, so any
-# difference in results is attributable to compression rank alone, not
-# some other config difference.
-#
-# factorization: "tucker" switches the plain dense FNO over to a
-# compressed Tensor FNO (TFNO) -- rank is the fraction (0, 1] of the full
-# tensor's rank kept; rank=1.0 would be (approximately) the dense model's
-# own capacity, so smaller rank means more compression, fewer effective
-# parameters, and (typically) faster training/inference at some accuracy
-# cost -- this sweep is exactly to find where that tradeoff actually
-# lands for this problem.
-#
 #   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.75.yaml
 #   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.75.yaml --targets coarse
 run_name: "tucker_rank_0.75"
@@ -24,10 +7,5 @@ model:
   rank: 0.75
 
 training:
-  # Same seed across all 4 rank values -- identical weight init and batch
-  # order, so any difference in results is attributable to rank alone.
-  # (Already baseline_fno.yaml's default; set explicitly here so this
-  # file stays self-documenting on its own.)
   seed: 42
-  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
-  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.
+

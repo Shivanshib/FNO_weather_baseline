@@ -1,10 +1,3 @@
-# One of a 4-way TFNO rank sweep (0.75, 0.5, 0.25, 0.05 -- see
-# tucker_rank_0.75.yaml's comment for the full explanation, shared by all
-# 4 files). Same seed, same 1985-2014 training window, same 80 pretrain +
-# 50 fine-tune schedule as the baseline -- only rank differs. This is the
-# most heavily compressed of the 4 -- expect the clearest accuracy
-# tradeoff (if any) to show up here first.
-#
 #   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.05.yaml
 #   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.05.yaml --targets coarse
 run_name: "tucker_rank_0.05"
@@ -14,7 +7,5 @@ model:
   rank: 0.05
 
 training:
-  # Same seed across all 4 rank values -- see tucker_rank_0.75.yaml's comment.
   seed: 42
-  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
-  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.
+

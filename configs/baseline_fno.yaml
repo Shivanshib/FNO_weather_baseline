@@ -1,9 +1,4 @@
-# Baseline FNO configuration.
-#
-# All paths, hyperparameters, and machine-specific settings live here, so
-# moving to a different machine should only ever mean editing this file,
-# never the code.
-
+# Baseline FNO configuration
 run_name: "fno_baseline_64x32"
 
 data:
@@ -41,115 +36,62 @@ data:
   flip_lat: false
   flip_lon: false
 
-  # Time-based split, not random -- avoids leaking information between
-  # adjacent, highly correlated timesteps. train_start pushed back from
-  # 2000-01-01 to 1985-01-01 (2026-08-25) -- another 15 years of training
-  # data on top of the original 15 (2000-2014), 30 years total. val range
-  # unchanged.
+  # Time-based training splits
   train_start: "1985-01-01"
   train_end: "2014-12-31"
   val_start: "2015-01-01"
   val_end: "2016-12-31"
 
-  # stats_cache_path is NOT set here -- always auto-derived from run_name
-  # (outputs/{run_name}/stats/...), see config.py::derive_run_paths.
-
+# Baseline Model set up
 model:
   in_channels: 20
   out_channels: 20
   # (lat modes, lon modes) -- the model's (H, W) axis order, the REVERSE
-  # of resolution's (lon, lat) above. Nyquist ceiling for this grid:
-  # H=32 -> max 16, W=64 -> max 32. Already at the ceiling here; back off
-  # if training is unstable.
+  # of resolution's (lon, lat) above.
   n_modes: [16, 32]
   hidden_channels: 64
   n_layers: 4
-  # TFNO compression -- leave both null for a plain dense FNO (the
-  # baseline). Set factorization: "tucker" and a rank in (0, 1] to switch on.
+  # TFNO compression 
   factorization: null
   rank: null
   # "direct" (baseline): predicts the full next state u(t+6h) outright.
-  # "residual": predicts the delta du = u(t+6h) - u(t) instead. Switch via
-  # an experiment override (configs/experiments/residual_target.yaml),
-  # not by editing this file.
+  # "residual": predicts the delta du = u(t+6h) - u(t) instead.
   target_mode: "direct"
 
 training:
   batch_size: 32
-  # ℓ1 in the FourCastNet paper's own recipe -- pretraining's peak LR.
   learning_rate: 5.0e-4
   weight_decay: 1.0e-5
-  # Pretrain epoch count, matching the paper's own recipe.
+  # Pretrain epoch count
   epochs: 80
   num_workers: 4
   device: "cuda"  # falls back to cpu automatically if unavailable
 
-  # Seeds model weight init and DataLoader shuffle order (config.py::set_seed).
-  # Keep this the SAME across experiments you want to compare fairly (e.g.
-  # different target_mode or factorization settings) -- only override it
-  # per-experiment if you deliberately want a different random init.
+  # Seeds model weight init and DataLoader shuffle order (config.py::set_seed)
   seed: 42
 
-  # FourCastNet-style 2-step fine-tuning after the `epochs` above -- a
-  # FIXED part of this project's training recipe now, not an axis to
-  # compare with/without, so it lives here rather than per-experiment
-  # (every experiment inherits it unless it explicitly overrides these
-  # fields itself). See configs/experiments/twostep_finetune.yaml and
-  # Trainer._run_epoch's n_future_steps branch.
-  #
-  # Fine-tuning gets its OWN fresh cosine schedule (Trainer.
-  # _start_finetune_phase), restarting at finetune_learning_rate -- NOT a
-  # continuation of the pretrain curve. finetune_learning_rate is ℓ2 in
-  # the paper's recipe: 5x lower peak than pretrain's ℓ1 above, since
-  # fine-tuning is a delicate adjustment on an already-trained model, not
-  # training from scratch. REQUIRED once finetune_epochs > 0 -- raises at
-  # config-load time if missing (config.py::_validate_finetune_lr).
+  # fine-tuning epoch count
   finetune_epochs: 50
   finetune_learning_rate: 1.0e-4
 
-  # Pretrain's CosineAnnealingLR: decays learning_rate down to min_lr
-  # over lr_scheduler_t_max epochs (null = defaults to `epochs`, so the
-  # curve spans the whole pretrain budget). Scheduled, not reactive to
-  # val loss. finetune_lr_scheduler_t_max is the fine-tune phase's own
-  # equivalent (null = defaults to finetune_epochs).
   lr_scheduler_t_max: null
   finetune_lr_scheduler_t_max: null
   min_lr: 1.0e-6
 
-  # Stop once val loss hasn't improved for this many epochs. Kept
-  # generous since progress genuinely slows (not just plateaus) once the
-  # cosine curve is deep into its tail.
+  # Stop once val loss hasn't improved for this many epochs.
   early_stopping_patience: 25
 
-  # The one shared, un-namespaced root every run's folder sits under
-  # (machine-specific, e.g. point at a quota-safe disk). checkpoint_dir/
-  # plot_dir/log_dir are NOT set here -- always auto-derived per run_name,
-  # see config.py::derive_run_paths.
+  # shared root every run's folder sits under
   output_dir: "outputs"
 
-# No `metrics:` section -- training always scores with lat_weighted_mse
-# directly (training/metrics.py); per-channel/lead-time metrics are
-# computed separately, after training, by inference/evaluate.py.
-
 inference:
-  # checkpoint_path/output_dir are NOT set here -- always auto-derived
-  # from run_name, so evaluate.py/predict_single_variable.py always pick
-  # up the checkpoint this same config trained. See config.py::derive_run_paths.
 
-  # 1-week forecast at the training cadence (6-hourly) = 28 autoregressive
-  # steps. Shared across every target below -- same model, same rollout
-  # length, different starting grids.
+  # 1-week forecast at the training cadence (6-hourly) = 28 autoregressive steps
   forecast_lead_steps: 28
 
-  # Shared starting timestep for every target's rollout, so they're
-  # compared on identical real dates. null (default) = each store's first
-  # available timestep, which for these stores is 1959 -- decades before
-  # the training window. Set an explicit date (e.g. "2016-06-01") for a
-  # fairer resolution-only comparison.
+  # Set an explicit date (e.g. "2016-06-01") later
   start_date: null
 
-  # Each target is a separate GCS store to run the same trained model on,
-  # with its own resolution and preprocessing needs.
   targets:
     # Native full-resolution ERA5. Only provides specific humidity, so
     # r500/r850 must be DERIVED (inference/preprocessing.py). Latitude is
@@ -161,9 +103,7 @@ inference:
       flip_lon: false
       derive_relative_humidity: true
 
-    # 1.5deg resampled store, same regridding pipeline as the coarse
-    # training store -- relative_humidity available directly, ascending
-    # latitude, no flip needed.
+    # 1.5deg resampled store, same regridding pipeline as the coarse training store 
     - name: "1p5deg"
       gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr"
       resolution: [240, 121]
@@ -171,9 +111,7 @@ inference:
       flip_lon: false
       derive_relative_humidity: false
 
-    # Same store/resolution as training -- an in-distribution reference
-    # point, showing performance with no resolution-generalisation gap at
-    # all, for comparison against native_highres/1p5deg above.
+    # Same store/resolution as training 
     - name: "coarse"
       gcs_bucket_path: "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
       resolution: [64, 32]

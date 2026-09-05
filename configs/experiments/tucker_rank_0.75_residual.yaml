@@ -1,14 +1,3 @@
-# Residual-mode counterpart to tucker_rank_0.75.yaml -- same 4-way TFNO
-# rank sweep (0.75, 0.5, 0.25, 0.05 -- see that file's comment for the
-# full explanation), but model.target_mode: "residual" instead of the
-# baseline's "direct". Same seed, same 1985-2014 training window, same 80
-# pretrain + 50 fine-tune schedule -- only rank (across this 4-file set)
-# and target_mode (vs the non-"_residual" 4-file set) differ, so any
-# difference in results is attributable to one of those two axes alone,
-# not some other config difference. A NEW run_name (not
-# tucker_rank_0.75.yaml's) so this doesn't collide with or auto-resume
-# that direct-mode run's checkpoint.
-#
 #   python scripts/train.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.75_residual.yaml
 #   python scripts/evaluate.py --config configs/baseline_fno.yaml --experiment configs/experiments/tucker_rank_0.75_residual.yaml --targets coarse
 run_name: "tucker_rank_0.75_residual"
@@ -19,8 +8,5 @@ model:
   rank: 0.75
 
 training:
-  # Same seed across all 8 rank x target_mode combinations -- see
-  # tucker_rank_0.75.yaml's comment.
   seed: 42
-  # epochs/finetune_epochs deliberately NOT overridden here -- inherits
-  # baseline_fno.yaml's 80 (pretrain) + 50 (fine-tune) as-is.
+

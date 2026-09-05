@@ -1,8 +1,7 @@
 """
 Central configuration schema. Loads the YAML config into a typed
 structure and resolves anything machine-specific (device, output paths)
-here -- this should be the only place that needs editing when moving to a
-different machine.
+here.
 """
 
 from __future__ import annotations

@@ -1,15 +1,11 @@
 """
 Backfills the training split's shared climatology.npz (outputs/
 stats_{train_start}_{train_end}/climatology.npz, config.py::
-derive_run_paths -- SHARED across every run using that same split) for a
-run that was trained BEFORE climatology existed (train.py now computes
-this automatically for every new run -- this script is only for runs
+derive_run_paths ;these are shared across every run using that same split) for a
+run that was trained before climatology existed (train.py now computes
+this automatically for every new run. This script is only for runs
 started earlier). Needs only the training split's data, not the model/
-checkpoint at all, so this never touches or retrains anything.
-
-Since the cache is shared, this is a genuine no-op (no GCS fetch at all)
-if ANY other run already backfilled -- or trained under -- the exact same
-data.train_start/train_end.
+checkpoint at all.
 
 Usage:
     python scripts/compute_climatology.py --config configs/baseline_fno.yaml --experiment configs/experiments/target_mode_direct.yaml
@@ -39,9 +35,7 @@ def main():
               f"-- nothing to backfill, skipping the GCS fetch entirely.")
         return
 
-    # Train split only -- climatology doesn't need val data, so this
-    # builds GCSWeatherDataset directly rather than going through
-    # build_train_val_datasets (which would also fetch val for nothing).
+    # Train split only (climatology doesn't need val data)
     train_ds = GCSWeatherDataset(
         gcs_bucket_path=cfg.data.gcs_bucket_path,
         channels=cfg.data.channels,

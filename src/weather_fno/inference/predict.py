@@ -2,7 +2,7 @@
 Shared building blocks for running a trained model at inference time:
 fetching a store's data, the autoregressive rollout, and loading a trained
 checkpoint. Used by both scripts/evaluate.py and
-scripts/predict_single_variable.py -- no CLI of its own.
+scripts/predict_single_variable.py.
 
 The model is trained on single 6-hour steps, so a multi-day forecast means
 running it forecast_lead_steps times, feeding each output back in as the

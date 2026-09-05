@@ -1,7 +1,4 @@
 """
-CLI entrypoint. Same command works on cream, vanilla, or external compute —
-only configs/baseline_fno.yaml (or an env-specified alternative) changes.
-
 Usage:
     python scripts/train.py --config configs/baseline_fno.yaml
     # Sweeping a few parameters without touching the base config or the

@@ -1,10 +1,9 @@
 """
-CLI entrypoint: evaluate a trained model's autoregressive forecast against
-ground truth on every configured inference target -- lat-weighted RMSE per
+Evaluates a trained model's autoregressive forecast against
+ground truth on every configured inference target, the lat-weighted RMSE per
 lead time vs a persistence baseline (and a climatology baseline, on
-coarse-grid targets -- see data/climatology.py), plus the model's anomaly
-correlation coefficient (ACC) vs lead time, plus forecast-vs-actual map
-plots.
+coarse-grid targets, plus the model's anomaly correlation coefficient (ACC)
+vs lead time, plus forecast-vs-actual map plots.
 
 Saves, per target, into cfg.inference.output_dir:
   {target.name}_eval_metrics.npz       lead_hours, model_rmse, model_rmse_banded
@@ -16,14 +15,6 @@ Saves, per target, into cfg.inference.output_dir:
   {target.name}_acc_vs_lead_time.png   ACC scorecard (only for targets with climatology)
   {target.name}_{MAP_CHANNEL}_maps.png ground truth / forecast / error maps
 
-climatology_rmse/model_acc need outputs/stats_{train_start}_{train_end}/
-climatology.npz (shared across every run using that same training split,
-see config.py::derive_run_paths), computed automatically by train.py --
-for a run trained before this feature existed (or before this sharing
-existed), run scripts/compute_climatology.py once to backfill it (doesn't
-need the model/checkpoint, so it's safe to run any time). A run without
-it just gets model_rmse/persistence_rmse as before, with a printed
-warning, not an error.
 
 Usage:
     python scripts/evaluate.py --config configs/baseline_fno.yaml
@@ -44,10 +35,6 @@ import argparse
 from weather_fno.config import load_config
 from weather_fno.inference.evaluate import run_full_evaluation
 
-# Small, standard set of variables for the RMSE scorecard -- surface temp,
-# mid-tropospheric height, sea-level pressure, near-surface wind. Edit this
-# list (using any short_name from configs/baseline_fno.yaml's channel list)
-# to change what gets plotted.
 HEADLINE_CHANNELS = ["t2m", "z500", "mslp", "u10"]
 
 # Which single channel to show full ground-truth/forecast/error maps for.

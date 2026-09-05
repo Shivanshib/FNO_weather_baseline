@@ -58,20 +58,12 @@ class Trainer:
         self.device = device
         self.target_mode = target_mode
 
-        # Pretrain's own CosineAnnealingLR, built now -- BEFORE
-        # load_checkpoint touches the optimizer's lr below -- so its
-        # base_lrs are captured as cfg.learning_rate regardless of
-        # whatever gets restored later (same reasoning as the resume
-        # comment further down).
+
         pretrain_t_max = cfg.lr_scheduler_t_max or cfg.epochs
         self.pretrain_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=pretrain_t_max, eta_min=cfg.min_lr,
         )
-        # The fine-tune schedule can't be built yet -- it needs the
-        # optimizer's lr freshly reset to cfg.finetune_learning_rate first
-        # (see _start_finetune_phase), which must happen exactly once, at
-        # the real phase transition -- either fresh in fit(), or here on
-        # a resume that lands directly in the fine-tune phase.
+     
         self.finetune_scheduler = None
 
         self.history = {"train_loss": [], "val_loss": []}
@@ -97,34 +89,8 @@ class Trainer:
             self.best_val_loss = ckpt["best_val_loss"]
             self.history = ckpt["history"]
 
-            # Replaying a scheduler correctly on resume is trickier than
-            # it looks -- two things matter here, verified directly (not
-            # just reasoned about -- see CODE_REFERENCE.md):
-            #   1. Use the CLOSED-FORM scheduler.step(epoch=...), not a
-            #      loop of bare step() calls. Bare step() computes the
-            #      next LR from the OPTIMIZER'S CURRENT lr, which
-            #      load_checkpoint just overwrote to its already-decayed,
-            #      end-of-run value -- looping bare step() from there
-            #      never recovers. The closed form recomputes purely from
-            #      epoch count and this run's own base_lrs instead, so
-            #      it's unaffected by whatever lr got loaded.
-            #   2. Replay to epoch_index + 1, not epoch_index. At save
-            #      time, epoch 0..epoch_index had each already called
-            #      .step() once, so the scheduler's true position is one
-            #      step further than the saved epoch index.
-            # (The epoch= form is soft-deprecated by PyTorch in favour of
-            # bare step() -- that general advice doesn't apply to this
-            # one-off resume-time replay, hence the warning suppression.)
-            #
-            # Which of the two schedules to replay depends on which phase
-            # start_epoch lands in: <= cfg.epochs means pretraining hasn't
-            # finished a fine-tune epoch yet (pretrain_scheduler is still
-            # the relevant one, if it'll be used again at all -- harmless
-            # even in the exact-boundary case where it won't be, since
-            # fit() builds a completely fresh finetune_scheduler there
-            # anyway); anything past that means fine-tuning had already
-            # started, so finetune_scheduler needs building AND replaying
-            # to its own relative position within the fine-tune phase.
+        
+        
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*")
                 warnings.filterwarnings("ignore", message=".*epoch parameter.*")
@@ -154,8 +120,6 @@ class Trainer:
         present instead of recomputing it from the CURRENT lr, which
         would otherwise make this "fresh" schedule silently decay from
         pretrain's OLD base LR instead of finetune_learning_rate.
-        Verified directly (not assumed) that clearing it first is what
-        makes this correct -- see CODE_REFERENCE.md.
         """
         for group in self.optimizer.param_groups:
             group["lr"] = self.cfg.finetune_learning_rate

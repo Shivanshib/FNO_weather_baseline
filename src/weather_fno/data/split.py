@@ -1,7 +1,5 @@
 """
-Builds the train and validation datasets, split by date (not randomly --
-weather timesteps are highly correlated, so a random split would leak
-information between train and val).
+Builds the train and validation datasets, split by date
 """
 
 from __future__ import annotations
@@ -12,8 +10,7 @@ from weather_fno.data.gcs_dataset import GCSWeatherDataset
 
 def build_train_val_datasets(data_cfg: DataConfig):
     """Build train first (fits fresh normalisation stats from its own
-    data), then val reusing those same stats -- val must never fit its
-    own stats, or it stops being a fair measure of generalisation."""
+    data), then val reusing those same stats"""
     train_cache = data_cfg.stats_cache_path.replace("normalisation_stats", "train_cache")
 
     train_ds = GCSWeatherDataset(

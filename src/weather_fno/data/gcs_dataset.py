@@ -2,23 +2,13 @@
 PyTorch Dataset for 20-channel ERA5-style training data, streamed from a
 GCS zarr store. data.gcs_bucket_path/resolution/flip_lat/flip_lon (and
 derive_relative_humidity, for a store that doesn't provide it directly)
-are all just config -- this class itself doesn't assume any particular
-grid, so an experiment override can point training at the coarse 64x32
-store (the baseline default), the 1.5deg 240x121 store, or the native
-1440x721 store instead (see configs/experiments/train_on_1p5deg.yaml /
-train_on_native_highres.yaml).
+are all just config
 
 The whole split fits in memory, so __init__ fetches and normalises it all
 up front -- there is no lazy/streamed reading. Only the small
 normalisation stats (mean/std/lat_values) ever get cached to disk -- not
 the full array, which can be several GB (at the coarse baseline's
-resolution) to many TB (at native resolution -- see
-train_on_native_highres.yaml's own comments) and would risk filling up a
-shared/quota-limited disk. So every run re-fetches from GCS on startup
-instead (a few minutes at coarse resolution, but bounded ONLY by however
-much date range x resolution you ask for -- a higher-resolution
-experiment MUST use a correspondingly shorter date range, since this
-eager fetch has to fit in RAM).
+resolution) to many TB.
 """
 
 from __future__ import annotations
@@ -128,10 +118,7 @@ class GCSWeatherDataset(Dataset):
             gcs_bucket_path: zarr path of the training store.
             channels: ordered list of variables to stack into channels.
             start, end: inclusive date strings bounding this split.
-            flip_lat, flip_lon: orientation fixes for this store (e.g. it
-                might store latitude north-to-south instead of the other
-                way round) -- separate from axis ORDER, which is always
-                handled correctly above via the named transpose.
+            flip_lat, flip_lon: orientation fixes for this store 
             lat_dim, lon_dim: the store's actual dimension names.
             stats: {"mean": ..., "std": ...} to normalise with. Pass None
                 to fit fresh stats from this split's own data (the TRAIN
@@ -141,17 +128,8 @@ class GCSWeatherDataset(Dataset):
             cache_path: where to save the fitted stats, so a later process
                 (evaluate.py, predict_single_variable.py) can reuse them
                 without needing this run's data in memory. Only saved when
-                stats=None -- i.e. only when this call is the one actually
-                fitting fresh stats. Callers now pass a path SHARED across
-                every run using the same (start, end) training split
-                (config.py::derive_run_paths), since the fitted values only
-                depend on the data itself, never on run_name/seed/
-                architecture -- unconditionally overwritten here every
-                time regardless, which is harmless (deterministic fit,
-                same split -> byte-identical values) and simpler than
-                adding a skip-if-exists check for something this cheap to
-                recompute (unlike climatology.npz's ~200MB write, which
-                training/run.py DOES skip when already cached).
+                stats=None, i.e. only when this call is the one actually
+                fitting fresh stats.
             derive_relative_humidity: True for a store (e.g. native ERA5)
                 that doesn't provide relative_humidity directly -- see
                 _select_channels above. False (default) for the coarse/
@@ -218,8 +196,7 @@ class MultiStepDataset(Dataset):
     """
     Same idea as GCSWeatherDataset, but pairs each timestep with several
     FUTURE steps instead of just one -- used for FourCastNet-style
-    multi-step fine-tuning (see Trainer._run_epoch's n_future_steps
-    branch). Wraps an already-loaded data tensor (e.g. a
+    multi-step fine-tuning. Wraps an already-loaded data tensor (e.g. a
     GCSWeatherDataset's own .data) rather than fetching anything itself,
     since it's meant to reuse a dataset that's already been fetched and
     normalised -- building one costs nothing extra.

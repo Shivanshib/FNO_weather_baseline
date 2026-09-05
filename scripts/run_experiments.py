@@ -1,26 +1,12 @@
 """
-Trains several experiments in sequence, unattended -- e.g. leave this
-running in a tmux/screen session overnight to cover every experiment file
-you want trained, and come back later to evaluate them all
-(scripts/evaluate_experiments.py).
-
-Each experiment runs as its own SEPARATE subprocess (a fresh
-`python scripts/train.py --experiment ...` call), not an in-process loop
-like scripts/sweep.py -- deliberately, so a crash in one experiment (e.g.
-a CUDA "unspecified launch failure" on a shared GPU) can't taint the CUDA
-context for the ones after it. A crashed experiment is logged and
-skipped; the rest still run. Since Trainer auto-resumes from its own
-checkpoint, rerunning this same command later retries any
-failed/interrupted experiment from wherever it left off, and quickly
-no-ops on any experiment that's already fully trained.
+Trains several experiments in sequence, unattended.
 
 The summary also reports, per experiment (read back from its own
 checkpoint, not recomputed): wall-clock time for the whole subprocess
 (includes data fetch/setup), pure training compute time (sum of every
 epoch's own time, from Trainer.fit's history -- excludes fetch/setup, so
 it's the fairer number for comparing different architectures' actual
-training cost), and parameter count -- everything you need to compare the
-"cost" of different models side by side without re-timing anything.
+training cost), and parameter count.
 
 Usage:
     python scripts/run_experiments.py --config configs/baseline_fno.yaml \\
@@ -78,9 +64,7 @@ def main():
                 train_time_seconds = sum(ckpt["history"].get("epoch_time_seconds", []))
                 # neuralop's state_dict() includes a non-tensor "_metadata"
                 # entry (construction hyperparameters) alongside the real
-                # weights -- filter to actual tensors, confirmed directly
-                # rather than assumed (every value being a tensor is NOT
-                # a safe assumption for this model's state_dict()).
+                # weights -- filter to actual tensors
                 n_params = sum(t.numel() for t in ckpt["model_state"].values() if torch.is_tensor(t))
 
             print(f"[{label}] {status} (wall clock: {wall_time / 60:.1f} min)", flush=True)

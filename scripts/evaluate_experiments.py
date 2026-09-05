@@ -1,17 +1,8 @@
 """
-Evaluates several trained experiments in sequence -- the companion to
-run_experiments.py's batch training. Each experiment runs as its own
-subprocess (same crash-isolation reasoning as run_experiments.py), then a
-combined summary table (mean RMSE across channels at the final lead time,
-model vs persistence, plus the rollout's own wall-clock time -- the
-"cost" of inference, comparable across different architectures -- per
-target, per experiment) gets printed and saved to CSV, so you can see
-every experiment's results side by side without hunting through each
-run's own outputs/{run_name}/predictions/ folder individually.
-
-Doesn't recompute anything -- reads back the {target}_eval_metrics.npz
-each scripts/evaluate.py call already saves, same as any other consumer
-of those files (e.g. notebooks/inspect_predictions.ipynb).
+Evaluates several trained experiments in sequence; the companion code to
+run_experiments.py's batch training. Saves combined summary table 
+(mean RMSE across channels at the final lead time, model vs persistence, 
+plus the rollout's wall-clock time and gets printed and saved to CSV.
 
 Usage:
     python scripts/evaluate_experiments.py --config configs/baseline_fno.yaml \\
@@ -60,7 +51,7 @@ def main():
             print(f"[{label}] FAILED (exit {proc.returncode}) -- excluded from the summary")
             continue
 
-        # Read back whatever this run's own evaluate.py call just saved --
+        # Read back whatever this run's own evaluate.py call just saved
         # same targets it was just run against (args.targets if given,
         # otherwise every target configured for this run).
         cfg = load_config(args.config, override_path=experiment_path)

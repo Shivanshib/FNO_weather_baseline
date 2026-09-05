@@ -73,16 +73,10 @@ def evaluate_target(
     """
     Fetch an initial condition plus forecast_lead_steps of ground truth
     for `target`, run the autoregressive rollout, and score it against
-    ground truth AND a persistence baseline (repeat the initial condition
-    unchanged -- the standard "is the model better than doing nothing"
-    check) at every lead time, per channel, AND per latitude band
-    (training/metrics.py::lat_banded_rmse_per_channel) within each channel
-    -- global-per-channel RMSE can look fine while hiding error that's
-    actually concentrated at the poles or in the tropics.
+    ground truth AND a persistence baseline at every lead time, per channel, 
+    AND per latitude band
 
-    climatology (optional, from data/climatology.py::compute_climatology
-    or its cached .npz, coarse-grid only -- see that module's docstring
-    for why): if given, ALSO scores a climatology baseline (RMSE) and the
+    climatology if given, ALSO scores a climatology baseline (RMSE) and the
     model's anomaly correlation coefficient (ACC) against it, at every
     lead time, per channel. If None, those two keys are simply absent
     from the result -- callers (scripts/evaluate.py) handle that by just
@@ -91,11 +85,9 @@ def evaluate_target(
     Returns a dict with lead_hours, model_rmse (n_steps, C),
     persistence_rmse (n_steps, C), model_rmse_banded (n_steps, n_bands, C),
     lat_band_labels (n_bands, strings), rollout_time_seconds (a scalar --
-    the n_steps forward passes only, not the data fetch or scoring around
-    it, so it's directly comparable across different model architectures),
-    optionally climatology_rmse (n_steps, C) and model_acc (n_steps, C),
-    plus the in-memory arrays needed for plotting (initial_condition,
-    forecast, ground_truth -- physical units).
+    the n_steps forward passes only), optionally climatology_rmse (n_steps, C)
+    and model_acc (n_steps, C), plus the in-memory arrays needed for plotting 
+    (initial_condition, forecast, ground_truth -- physical units).
     """
     # 1. Fetch initial condition + real ground truth for every lead time.
     n_steps = cfg.inference.forecast_lead_steps
@@ -111,13 +103,6 @@ def evaluate_target(
 
     # Warm-up: one throwaway forward pass on this target's own input
     # shape, forced to fully finish via .cpu() before the timer starts.
-    # CUDA context init, first-call kernel compilation/algorithm
-    # selection, and the GPU ramping up from idle clocks are all real,
-    # one-time costs -- for a short rollout they'd otherwise dominate
-    # rollout_time_seconds instead of reflecting steady-state performance,
-    # and could bias a comparison between architectures with different
-    # first-call compile costs. Output discarded; model is already in
-    # eval() (load_trained_model), so this can't mutate any state.
     with torch.no_grad():
         model(x0.to(device)).cpu()
 
@@ -184,12 +169,8 @@ def run_evaluation(
     {target.name: result} -- see evaluate_target for the result shape.
 
     climatology (optional) is only ever computed at the TRAINING grid's
-    resolution (coarse-only, see data/climatology.py) -- it only gets
-    applied to a target whose own resolution matches cfg.data.resolution
-    (in practice, the "coarse" target), never to native_highres/1p5deg,
-    since a mismatched grid shape would be meaningless (or crash) there.
-    Targets it doesn't apply to still get model_rmse/persistence_rmse as
-    normal, just without climatology_rmse/model_acc.
+    resolution. It only gets applied to a target whose own resolution matches
+    cfg.data.resolution
     """
     device = torch.device(cfg.training.device if torch.cuda.is_available() else "cpu")
     model = load_trained_model(cfg, device)
@@ -230,9 +211,7 @@ def run_full_evaluation(
     for every target in cfg.inference.targets, save each target's
     {target}_eval_metrics.npz plus its scorecard/ACC/forecast-map plots to
     cfg.inference.output_dir -- exactly what scripts/evaluate.py's CLI
-    does, minus argument parsing and --targets filtering (do that on
-    cfg.inference.targets yourself before calling this, same as
-    scripts/evaluate.py does).
+    does, minus argument parsing and --targets filtering.
 
     Returns the same {target.name: result} dict run_evaluation() does, so
     a caller that wants to aggregate across several calls (e.g.

@@ -1,8 +1,6 @@
 """
 Climatological mean per (day-of-year, hour-of-day), computed once from the
-training split and cached alongside the normalisation stats -- used as a
-baseline in evaluation (inference/evaluate.py) and for the anomaly
-correlation coefficient (training/metrics.py::lat_weighted_acc).
+training split and cached alongside the normalisation stats.
 
 Coarse-grid only: computing this for the native-resolution store would
 mean fetching ~15 years of native data just for a baseline, which this
@@ -16,13 +14,7 @@ Dec 31 into Jan 1), instead of fitting harmonics.
 
 Cache size: for the 20-channel, 64x32 baseline grid, the cached
 climatology.npz is ~200MB (366 days x 4 hours x 20 channels x 32x64
-grid, float32) -- worth knowing given this project's history of disk-
-quota problems from oversized caches. float32 is required, not just
-convenient: float16 overflows (silently, to inf) on this project's own
-geopotential channels, whose physical values exceed float16's ~65504
-max -- confirmed directly, not assumed. Revisit only if disk space
-actually becomes a problem, e.g. by storing at a coarser day-of-year
-stride with interpolation at query time.
+grid, float32)
 """
 
 from __future__ import annotations

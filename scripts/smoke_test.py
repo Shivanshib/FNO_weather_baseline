@@ -6,11 +6,6 @@ Runs the SAME config as a real run, but with tiny date ranges/epoch count,
 and every output path redirected to outputs/smoketest/ so it never touches
 a real run's checkpoints or cache.
 
-Meant to be run right after moving to a new machine (e.g. a university GPU
-node) and before starting a real training run -- catches GCS reachability,
-GPU visibility, and num_workers problems in under a minute instead of
-partway through an overnight job.
-
 Usage:
     python scripts/smoke_test.py --config configs/baseline_fno.yaml
 """

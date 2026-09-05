@@ -39,25 +39,13 @@ def run_training(cfg: Config, device) -> dict:
     val_loader = DataLoader(val_ds, batch_size=cfg.training.batch_size,
                              shuffle=False, num_workers=cfg.training.num_workers)
 
-    # Climatology baseline for evaluation (inference/evaluate.py) and ACC
-    # (training/metrics.py::lat_weighted_acc) -- computed once here, from
-    # the training split's own data (already fetched above, no extra GCS
-    # cost), and cached so evaluate.py never needs to recompute it.
-    # data.stats_cache_path is now SHARED across every run using the same
-    # data.train_start/train_end (config.py::derive_run_paths) -- skip the
-    # (~200MB, non-trivial) recompute entirely if another run already
-    # produced a valid cache for this exact split. Validity is actually
-    # checked, not just existence -- a corrupted/truncated cache (e.g.
-    # from an interrupted process; this has genuinely happened) gets
-    # silently regenerated here rather than being "reused" forever.
+ 
     climatology_path = cfg.data.stats_cache_path.replace("normalisation_stats", "climatology")
     if climatology_cache_is_valid(climatology_path):
         print(f"[climatology] already cached for this training split at {climatology_path} "
               f"-- skipping recomputation.")
     else:
-        # Skips (with a warning) rather than failing if train_start/
-        # train_end don't span a full year -- see compute_and_save_
-        # climatology's docstring.
+ 
         train_physical = denormalise(train_ds.data.numpy(), train_ds.stats)
         compute_and_save_climatology(train_physical, train_ds.time_values, climatology_path)
 
